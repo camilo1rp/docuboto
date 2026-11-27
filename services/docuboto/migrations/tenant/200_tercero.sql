@@ -67,7 +67,7 @@ COMMENT ON COLUMN tercero.documento_declarado_numero IS 'Documento que el anóni
 
 COMMENT ON COLUMN tercero.conciliacion IS 'pendiente | vinculada (fusionada en una ficha existente) | confirmada (pasó a ficha definitiva) | descartada. NULL en fichas que nunca fueron provisionales.';
 
-COMMENT ON COLUMN tercero.conciliada_por IS 'auth_users.id de quien concilió; nunca el sub de Keycloak.';
+COMMENT ON COLUMN tercero.conciliada_por IS 'auth_users.id de quien concilió.';
 
 COMMENT ON COLUMN tercero.conciliacion_medio IS 'presencial_documento | respuesta_canal_registrado | llamada_telefono_registrado | otro. Obligatorio al vincular o confirmar; con `otro`, el motivo es obligatorio.';
 

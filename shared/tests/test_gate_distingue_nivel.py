@@ -30,10 +30,10 @@ este proyecto.
 
 from __future__ import annotations
 
-from tests._compose import glob_src
-
 import ast
 from pathlib import Path
+
+from tests._compose import glob_src
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
@@ -50,7 +50,11 @@ MENSAJE_CIEGO = "Se requiere el permiso {perm_name}\""
 def _archivos_con_gate() -> list[Path]:
     """Todo módulo que DEFINE un `require_permission`, derivado del árbol."""
     hallados = []
-    for ruta in sorted(glob_src(SERVICIOS, "*/app/**/*.py")):
+    # ADR-047: el gate de los dominios vive en la librería (`orpycamcp_common.clearance`);
+    # auth y tenant conservan el suyo propio (`core/authz.py`).
+    rutas = sorted(glob_src(SERVICIOS, "*/app/**/*.py"))
+    rutas.append(RAIZ / "shared" / "orpycamcp_common" / "clearance.py")
+    for ruta in rutas:
         try:
             arbol = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
         except SyntaxError:  # pragma: no cover — un .py roto ya falla en otro sitio
@@ -66,7 +70,7 @@ def _archivos_con_gate() -> list[Path]:
 def test_hay_gates_que_censar():
     """Anti-vacuidad: si el descubrimiento se rompe, este test cae, no el censo."""
     archivos = _archivos_con_gate()
-    assert len(archivos) >= 8, (
+    assert len(archivos) >= 3, (
         f"solo se hallaron {len(archivos)} implementaciones de require_permission; "
         "el descubrimiento está roto y el censo de abajo aprobaría sin mirar"
     )

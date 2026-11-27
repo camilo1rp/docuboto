@@ -15,14 +15,14 @@ Python sobre un tope de 1000 candidatas. Estos guardianes impiden que la copia v
 
 from __future__ import annotations
 
-from tests._chain import chain_text
-from tests._compose import paquete_de
-
 import re
 from pathlib import Path
 
 import pytest
+
 from orpycamcp_common import deadletter
+from tests._chain import chain_text
+from tests._compose import paquete_de
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"

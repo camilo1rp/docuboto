@@ -58,29 +58,13 @@ describe.each([
       expect(o.maxAge).toBeGreaterThan(0);
     }
   });
-
-  it("PKCE (verifier y state): mismos flags y vida de 5 minutos", async () => {
-    const m = await cargar(dev);
-    const c = espia();
-    m.storePkceVerifierCookie(c, "v");
-    m.storePkceStateCookie(c, "s");
-    const ops = opciones(c);
-    expect(ops).toHaveLength(2);
-    for (const o of ops) {
-      expect(o.httpOnly).toBe(true);
-      expect(o.sameSite).toBe("lax");
-      expect(o.path).toBe("/");
-      expect(o.secure).toBe(secureEsperado);
-      expect(o.maxAge).toBe(300);
-    }
-  });
 });
 
 describe("access_token: vida acotada", () => {
-  it("nunca supera 10 minutos aunque Keycloak conceda más", async () => {
+  it("nunca supera 15 minutos aunque el emisor conceda más", async () => {
     const m = await cargar(false);
     const c = espia();
     m.setSessionCookies(c, { access_token: "a", expires_in: 86400 });
-    expect(opciones(c)[0].maxAge).toBe(600);
+    expect(opciones(c)[0].maxAge).toBe(900);
   });
 });

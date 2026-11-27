@@ -29,7 +29,7 @@
  * transversal y no requiere que ningún proxy sepa que esto existe.
  *
  * **Solo hacia el gateway.** La cabecera se añade únicamente a las URL que
- * apuntan al API interno. Una llamada a Keycloak o a cualquier otro destino sale
+ * apuntan al API interno. Una llamada a cualquier otro destino sale
  * intacta: propagar la IP del usuario a terceros sería una fuga, no una mejora.
  */
 

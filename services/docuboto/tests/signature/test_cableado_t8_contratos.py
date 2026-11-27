@@ -1,0 +1,187 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+
+"""
+T8 — huecos de cableado que las suites con dobles por nombre no ven.
+
+``key_version`` de la fila ``firma_challenge`` y de la fila ``firma`` en el
+   camino de la CADENA: ``verify_otp`` debe usar la versión de la fila y el
+   INSERT de ``firma`` debe llevar la versión con que se firmó (un literal en
+   cualquiera de los dos pasaba todas las suites anteriores).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+import uuid
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from docuboto.config import signature as settings
+from signature.core.secret_derivation import KEY_VERSION_ACTUAL, KEY_VERSION_SIN_HMAC
+from tests.signature.app import app
+from tests.signature.conftest import TENANT_HEADERS, USER
+from tests.signature.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
+from tests.signature.test_cadena_2fa import (
+    CHALLENGE_ID,
+    FIRMA_ID,
+    NOW,
+    _challenge_row,
+    _clear,
+    _override,
+    _patch_audit,
+    _patch_email,
+    _sol_row,
+)
+
+# ---------------------------------------------------------------------------
+# key_version en la cadena
+# ---------------------------------------------------------------------------
+
+_FIRMA_INS = {
+    "id": FIRMA_ID,
+    "objeto_tipo": "radicado",
+    "objeto_id": "2024-DEMO-E-000001",
+    "formato_solicitado": None,
+    "firmante_id": USER,
+    "payload_sha256": "a" * 64,
+    "firma_blob": "b" * 64,
+    "provider": "nativa",
+    "sello_tiempo": NOW,
+    "created_at": NOW,
+}
+
+
+def _conn_firma(challenge_row: dict):
+    conn = _make_conn()
+    turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
+    turno_firmado = _turno_row(orden=1, firmante_id=USER, estado="firmado", firma_id=FIRMA_ID)
+    conn.fetchval.side_effect = [True, 1]
+    conn.fetchrow.side_effect = [
+        _sol_row(), {}, turno, turno, challenge_row, _FIRMA_INS, None,
+        _sol_row(estado="firmado"), {},
+    ]
+    conn.fetch.return_value = [turno_firmado]
+    conn.execute.side_effect = _exec_sig
+    return conn
+
+
+async def _firmar(conn, otp: str = "123456"):
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            return await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                json={"challenge_id": str(CHALLENGE_ID), "otp": otp},
+                headers=TENANT_HEADERS,
+            )
+    finally:
+        _clear()
+
+
+def _row_esquema_retirado(otp: str = "123456") -> dict:
+    """Desafío del esquema retirado en B9: ``key_version=0`` y el hash que lo
+    firmaba (clave raíz directa, sin ``challenge_id``)."""
+    row = _challenge_row(otp=otp)
+    row["key_version"] = KEY_VERSION_SIN_HMAC
+    row["otp_hash"] = hmac.new(
+        settings.signature_secret.encode(), otp.encode(), digestmod=hashlib.sha256
+    ).hexdigest()
+    return row
+
+
+@pytest.mark.asyncio
+async def test_desafio_key_version_0_ya_no_se_consume_en_la_cadena(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B9-5: el esquema 0 se retiró. Un desafío con ``key_version=0`` y el código
+    CORRECTO de su hash viejo ya no verifica en ``_gate_2fa`` (401), aunque el hash
+    sea exactamente el que ese esquema producía. Mutación: restaurar la rama v0 en
+    ``otp._key_and_msg`` => 200 y esta prueba cae."""
+    _patch_audit(monkeypatch)
+    resp = await _firmar(_conn_firma(_row_esquema_retirado()))
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_desafio_cuya_key_version_no_corresponde_al_hash_se_rechaza(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control negativo del anterior: la fila dice v1 pero el hash es de v0 -> 401."""
+    _patch_audit(monkeypatch)
+    row = _row_esquema_retirado()
+    row["key_version"] = KEY_VERSION_ACTUAL
+    resp = await _firmar(_conn_firma(row))
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_la_firma_nativa_de_la_cadena_se_persiste_con_la_key_version_actual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El INSERT de ``firma`` lleva la versión con que se calculó el HMAC; un 0
+    literal haría que ``/verify`` recomputara con el esquema viejo y todas las
+    firmas nuevas de la cadena dejaran de verificar."""
+    _patch_audit(monkeypatch)
+    conn = _conn_firma(_challenge_row())
+    resp = await _firmar(conn)
+    assert resp.status_code == 200, resp.text
+    inserts = [
+        c for c in conn.fetchrow.call_args_list if re.search(r"INSERT INTO firma\s*\(", str(c.args[0]))
+    ]
+    assert len(inserts) == 1
+    assert inserts[0].args[-1] == KEY_VERSION_ACTUAL
+
+
+@pytest.mark.asyncio
+async def test_emitir_challenge_persiste_hash_que_verifica_con_su_propio_id_y_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El OTP que sale por correo debe verificar contra el ``otp_hash`` que se
+    insertó, con el ``challenge_id`` insertado y la ``key_version`` insertada
+    (el id se genera ANTES del hash: si no coinciden, el desafío nace inservible)."""
+    from signature.core.otp import verify_otp
+
+    _patch_audit(monkeypatch)
+    _, mock_send = _patch_email(monkeypatch)
+    conn = _make_conn()
+    conn.fetchval.side_effect = [True, 1]
+    conn.fetchrow.side_effect = [
+        _sol_row(), {}, _turno_row(firmante_id=USER), _sol_row(), _turno_row(firmante_id=USER),
+        None, _challenge_row(),
+    ]
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/challenge",
+                headers={**TENANT_HEADERS, "Authorization": "Bearer t"},
+            )
+    finally:
+        _clear()
+    assert resp.status_code == 201, resp.text
+    (ins,) = [
+        c for c in conn.fetchrow.call_args_list if "INSERT INTO firma_challenge" in str(c.args[0])
+    ]
+    cid, kv, otp_hash = ins.args[1], ins.args[2], ins.args[6]
+    assert isinstance(cid, uuid.UUID) and kv == KEY_VERSION_ACTUAL
+    # Lo enviado por correo es el OTP en claro (3.er argumento de send_otp_email o kw).
+    call = mock_send.await_args
+    otp = next(
+        v for v in list(call.args) + list(call.kwargs.values())
+        if isinstance(v, str) and re.fullmatch(rf"\d{{{settings.otp_longitud}}}", v)
+    )
+    assert verify_otp(
+        otp, otp_hash, settings.signature_secret,
+        key_version=kv, tenant_slug="demo", challenge_id=cid,
+    )

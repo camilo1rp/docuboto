@@ -26,15 +26,13 @@ INSERT INTO intelligence_state (id, capabilities_sha256, send_suspended, backfil
 CREATE TABLE intelligence_credentials (
     purpose text NOT NULL,
     slot smallint NOT NULL,
-    client_id text,
     ciphertext bytea NOT NULL,
     nonce bytea NOT NULL,
     kek_version integer NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_intelligence_credentials_client CHECK ((((purpose = 'service_client'::text) AND (client_id IS NOT NULL)) OR ((purpose <> 'service_client'::text) AND (client_id IS NULL)))),
     CONSTRAINT chk_intelligence_credentials_kek CHECK (((kek_version >= 1) AND (octet_length(nonce) = 12))),
-    CONSTRAINT chk_intelligence_credentials_purpose CHECK ((purpose = ANY (ARRAY['service_client'::text, 'hmac_return'::text, 'pseudonym'::text]))),
-    CONSTRAINT chk_intelligence_credentials_slot CHECK ((((purpose = 'hmac_return'::text) AND (slot = ANY (ARRAY[1, 2]))) OR ((purpose = ANY (ARRAY['service_client'::text, 'pseudonym'::text])) AND (slot = 1)))),
+    CONSTRAINT chk_intelligence_credentials_purpose CHECK ((purpose = ANY (ARRAY['hmac_return'::text, 'pseudonym'::text]))),
+    CONSTRAINT chk_intelligence_credentials_slot CHECK ((((purpose = 'hmac_return'::text) AND (slot = ANY (ARRAY[1, 2]))) OR ((purpose = 'pseudonym'::text) AND (slot = 1)))),
     CONSTRAINT intelligence_credentials_pkey PRIMARY KEY (purpose, slot)
 );
 

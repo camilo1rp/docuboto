@@ -1,6 +1,6 @@
 # Docuboto — Technical Reference
 
-Updated as of 2026-10-28 (ADR-046 D0: model layer and conversational assistant withdrawn).
+Updated as of 2026-11-23 (ADR-047: one process; gateway, worker, internal tokens and signed identity retired). Module sections below still name domains by their former service (`document-service` → package `document`).
 
 ## Purpose and audience
 
@@ -10,11 +10,11 @@ This is the map of what Docuboto already does and how it is built, so tech leads
 - **Tech leads**: read Architecture and Core modules to find the owning service of any change, then How to plan new work.
 - **Deeper reasons** behind each decision live in the ADRs under `docs/es/adr/` (Spanish). References like ADR-035 point there.
 
-Naming note: internal identifiers still use the upstream prefix `orpycamcp` (shared library `orpycamcp_common`, Redis streams `orpycamcp.*`, Keycloak realm `orpycamcp`). Read `orpycamcp` as "the system".
+Naming note: internal identifiers still use the upstream prefix `orpycamcp` (shared library `orpycamcp_common`, Redis streams `orpycamcp.*`). Read `orpycamcp` as "the system".
 
 ## System overview
 
-Docuboto is an SGDEA (Sistema de Gestión Documental Electrónico de Archivo): a multi-tenant records-management platform for Colombian public institutions, built as 10 FastAPI microservices (plus the single `docuboto` app process) behind one API gateway, with a SvelteKit server-rendered UI. It covers the full document lifecycle: registration (radicación), distribution, case files (expedientes), retention schedules (TRD/TVD), electronic signature, physical archive, digital preservation, citizen requests (PQRSD, Ley 1712), and a model-free knowledge gateway (full-text search as the user) with an optional outbound path to an intelligence provider over PPI v1.4.0. Docuboto itself does not call language models (ADR-046) and is not a tool server for agents: there is no MCP layer (ADR-051).
+Docuboto is an SGDEA (Sistema de Gestión Documental Electrónico de Archivo): a multi-tenant records-management platform for Colombian public institutions, built as one FastAPI process (`services/docuboto/`) whose nine domain packages call each other through `<package>/api.py`, behind an nginx `edge` in production, with a SvelteKit server-rendered UI. It covers the full document lifecycle: registration (radicación), distribution, case files (expedientes), retention schedules (TRD/TVD), electronic signature, physical archive, digital preservation, citizen requests (PQRSD, Ley 1712), and a model-free knowledge gateway (full-text search as the user) with an optional outbound path to an intelligence provider over PPI v1.4.0. Docuboto itself does not call language models (ADR-046) and is not a tool server for agents: there is no MCP layer (ADR-051).
 
 It is a fork of [OrpycaMCP](https://gitlab.com/orpyca/orfeo_mcp) under AGPL-3.0. Running a modified version as a network service obliges you to offer its source to users (AGPL §13).
 
@@ -27,7 +27,7 @@ It is a fork of [OrpycaMCP](https://gitlab.com/orpyca/orfeo_mcp) under AGPL-3.0.
 | Database | PostgreSQL 15, one database, one schema per tenant |
 | Messaging | Redis Streams with consumer groups and a transactional outbox |
 | Object storage | RustFS (S3-compatible) with Object Lock / WORM for preservation |
-| Identity | Keycloak (OIDC, Authorization Code + PKCE), TOTP 2FA in auth-service |
+| Identity | Issued by the app (ADR-048): argon2id, ES256 JWTs, JWKS, OIDC discovery and `client_credentials`; TOTP 2FA as a signing step-up |
 | Intelligence | No in-process models (ADR-046). knowledge-service answers from document-service FTS, or delegates to a provider over PPI v1.4.0 when the tenant is on `ppi` (ADR-051). No MCP layer, no generation route |
 | Packaging and CI | Docker Compose (dev and prod), GitLab CI, MkDocs bilingual docs |
 
@@ -48,7 +48,6 @@ Lines of `.py`, `.ts` and `.svelte` source per area, tests included, on `main` @
 | knowledge-service | 14,116 |
 | notification-service | 12,417 |
 | tenant-service | 10,450 |
-| api-gateway | 5,931 |
 | shared library | 4,088 |
 
 `whisper-service` was removed in ADR-046 D0 (former ~413 lines).
@@ -57,60 +56,56 @@ The four largest areas (archive, frontend, document, signature) hold about two t
 
 ### Environments
 
-- **Development**: `docker compose up -d` from the repo root. Host ports in the 19xxx range (gateway on 19080, API docs on `/docs`, Keycloak admin on 19180). Mailpit captures email.
+- **Development**: `docker compose up -d` from the repo root. Host ports in the 19xxx range (gateway on 19080, API docs on `/docs`). Mailpit captures email.
 - **Production**: `infra/docker-compose.prod.yml` adds an nginx `edge` container that terminates TLS and routes by hostname; only the edge is published. `scripts/preflight-prod.sh` checks required secrets. Backup and restore scripts in `infra/` are fail-closed and respect Object Lock retention.
 - **New tenant**: `scripts/init-tenant.sh` / `scripts/init_tenant.py` create the schema and run every service's tenant migrations.
 
 ## Architecture and design patterns
 
-The gateway authenticates, each service authorizes against its own tenant schema, and everything security-sensitive is written once in a shared library that guard tests protect. Every request from the browser goes through the SvelteKit server, then the gateway, then one domain service; services talk to each other through Redis Streams events or narrow internal HTTP routes.
+One process authenticates once, each domain authorizes against the tenant schema, and everything security-sensitive is written once in a shared library that guard tests protect. Every request from the browser goes through the SvelteKit server, then the app; domains call each other through `<package>/api.py` and publish Redis Streams events (ADR-047).
 
 ```mermaid
 graph TB
     Browser["Browser"]
-    EDGE["edge (nginx)<br/>TLS termination, host routing"]
+    EDGE["edge (nginx)<br/>TLS, host routing, per-IP rate limit"]
     FE["frontend (SvelteKit SSR)<br/>BFF, tokens in httpOnly cookies"]
-    KC["Keycloak<br/>OIDC login with PKCE"]
-    GW["api-gateway<br/>routing, authN, rate limit, tenant veto, signed identity"]
 
-    subgraph domain["Domain services (FastAPI, Python 3.11)"]
-        AUTH["auth-service<br/>RBAC, clearance, TOTP, keys"]
-        TEN["tenant-service<br/>entities, org units, calendar"]
-        DOC["document-service<br/>radicados, PQRSD, search"]
-        ARC["archive-service<br/>expedientes, TRD, transfers"]
-        STO["storage-service<br/>files, rendering, preservation"]
-        WF["workflow-service<br/>distribution, approvals, rules"]
-        SIG["signature-service<br/>XAdES, TSA, OCSP, seals"]
-        NOT["notification-service<br/>email, alerts, webhooks"]
-        KNO["knowledge-service<br/>FTS gateway, no models"]
-        LIB["shared library orpycamcp_common<br/>identity, RBAC, tenant, audit, events, KEK"]
+    subgraph app["app — one FastAPI process (services/docuboto)"]
+        MW["middleware<br/>request id, caller from JWT, per-user quota"]
+        AUTH["auth<br/>RBAC, clearance, TOTP, keys"]
+        TEN["tenant<br/>entity config, org units, calendar"]
+        DOC["document<br/>radicados, PQRSD, search"]
+        ARC["archive<br/>expedientes, TRD, transfers"]
+        STO["storage<br/>files, rendering, preservation"]
+        WF["workflow<br/>distribution, approvals, rules"]
+        SIG["signature<br/>XAdES, TSA, OCSP, seals"]
+        NOT["notification<br/>email, alerts, webhooks"]
+        KNO["knowledge<br/>FTS gateway, no models"]
+        BG["background loops<br/>consumers, reconciliation, heavy jobs"]
     end
 
-    PG[("PostgreSQL 15<br/>one database, schema per tenant")]
-    RD[("Redis<br/>streams, cache, nonces")]
-    S3[("RustFS (S3)<br/>Object Lock / WORM buckets")]
+    PG[("PostgreSQL<br/>one database, schema per entity")]
+    RD[("Redis<br/>streams (until ADR-049)")]
+    S3[("RustFS (S3)<br/>Object Lock / WORM (until ADR-050)")]
 
     Browser --> EDGE
     EDGE --> FE
-    EDGE --> KC
-    EDGE -->|API clients| GW
-    FE -->|Bearer JWT| GW
-    GW -->|signed, single-use identity headers| domain
-    KNO -->|search as the user| DOC
+    EDGE -->|API clients| MW
+    FE -->|Bearer JWT| MW
     KNO -.->|"PPI v1.4.0, only with PPI_PROVIDER_URL"| PPI["Intelligence provider (optional)"]
-    domain --> PG
-    domain --> RD
-    domain --> S3
+    app --> PG
+    app --> RD
+    app --> S3
 ```
 
-Only the edge is published in production. storage-service downloads and every `internal` router are deliberately not routed by the gateway. knowledge-service only exposes `/search` and `/antecedentes`.
+Only `edge` is published in production, and it answers 404 on `/metrics`. knowledge-service only exposes `/search` and `/antecedentes`.
 
 ### Design patterns in use
 
 | Pattern | Where | What it buys you |
 | --- | --- | --- |
 | Microservice per bounded context | `services/*` (ADR-001) | Each team area has one owner service and its own tables |
-| API gateway with prefix routing | `api-gateway`, routing table in `app/routers/proxy.py` | One public entry point; first matching prefix wins, so order matters |
+| One app, routers per domain | `docuboto.main.create_app` mounts every `DOMAIN_ROUTERS` | Routes are FastAPI routes; a new path family needs no proxy entry |
 | Backend-for-frontend | `frontend` (SvelteKit SSR) | The browser never calls the API; tokens stay in httpOnly cookies; gateway CORS off by default |
 | Layered service (router → service → repository) | Every Python service, template in `docs/templates/service-template/` | Same layout everywhere; SQL only in `repositories/` |
 | Raw SQL over asyncpg, JSONB for flexible metadata | ADR-003, ADR-007 | Full control of queries; no ORM migrations to reconcile |
@@ -137,18 +132,18 @@ Only the edge is published in production. storage-service downloads and every `i
 
 ### Request path inside a service
 
-1. Router dependency verifies the signed identity headers and claims the nonce in Redis.
-2. `get_tenant_conn` checks the tenant lifecycle state and sets `search_path` to the tenant schema.
-3. `require_permission("PERM_X")` resolves RBAC permission and CRUD level in the tenant DB.
-4. The router calls a service function, which uses repositories (SQL), clients (HTTP to other services) and the outbox (events).
+1. `UsuarioActualMiddleware` validates the Bearer JWT once and stores the caller in `request.state`; client-sent identity headers are dropped.
+2. `get_tenant_conn` (`orpycamcp_common.database`) checks that the entity exists and sets `search_path` to the tenant schema.
+3. `require_permission("PERM_X")` (`orpycamcp_common.clearance`) resolves RBAC permission and CRUD level in the tenant DB.
+4. The router calls a service function, which uses repositories (SQL), other domains through `<package>.api` (function calls) and the outbox (events).
 5. The audit log records the action, including denials.
 
 ### Communication between services
 
 | Mechanism | Use |
 | --- | --- |
-| HTTP through the gateway | Every user operation, including an agent acting through a scoped service account (ADR-051 §5) |
-| Direct HTTP with `X-Internal-Token` | `internal` routers only another service may call, for example document-service → storage-service for bytes. The gateway never routes `/api/v1/internal/*` |
+| HTTP to the app (through `edge` in production) | Every user operation |
+| Function call through `<package>/api.py` | One domain using another, for example document → `storage.api` for bytes. Only `<package>.api` may be imported across domains (`test_contrato_api.py`) |
 | Redis Streams events | Domain events, for example `document.radicado.created`, consumed by workflow, signature and notification (the PPI ingestion consumer runs in the app's lifespan only when `PPI_PROVIDER_URL` is set) |
 
 Event envelope fields: `event_id`, `event_type`, `version`, `tenant_slug`, `occurred_at`, `actor`, `correlation_id`, `dedup_key`, `payload` and an HMAC `firma`. Unsigned envelopes are rejected. Streams are named `orpycamcp.{service}.events`, dead letters `orpycamcp.{service}.deadletter`.
@@ -157,11 +152,11 @@ Event envelope fields: `event_id`, `event_type`, `version`, `tenant_slug`, `occu
 
 - The **owner** role runs migrations; services connect as the **application role** (`DB_APP_USER`) with only the grants they need. A guard test fails if a routed service connects as owner.
 - One chain in `services/docuboto/migrations/` (ADR-053): `runner.py` applies `global/` to `public` and `tenant/` to every `tenant_*` schema, recorded in `public.schema_migrations` under a shared lock (ADR-041).
-- In Compose, every service waits on the one-shot `migrate-docuboto` container; if migrations fail, the service doesn't start.
+- In Compose, the app waits on the one-shot `migrate-docuboto` container; if migrations fail, the app doesn't start.
 
 ## Core modules
 
-Each entry below lists what the module owns, its API surface, the functions that carry the business logic, its events and jobs, its tables, and the flags or gaps a planner should know. Paths are relative to `services/<name>/<module>/` (`document`, `workflow`, …; `app` for api-gatewayerver). `[int]` marks internal routes guarded by `X-Internal-Token` that the gateway never routes.
+Each entry below lists what the module owns, its API surface, the functions that carry the business logic, its events and jobs, its tables, and the flags or gaps a planner should know. Paths are relative to `services/docuboto/<package>/` (`document`, `workflow`, …). Routes marked `[int]` in older notes were retired by ADR-047: those calls are now `<package>/api.py` functions.
 
 ### Shared library: `orpycamcp_common`
 
@@ -172,47 +167,33 @@ Installed into every image. Anything security-sensitive that more than one servi
 | `audit` | Hash-chained, append-only audit writer and verifier: `append`, `append_denial`, `verify_chain` |
 | `events` | Signed event envelope, publish/consume helpers, consumer groups, reclaim, `spawn_supervised` |
 | `deadletter` | Clearance-filtered queries over the shared dead-letter table |
-| `identidad` | Sign and verify gateway identity headers; `IdentidadFirmadaMiddleware`; single-use nonces |
+| `usuario` | `UsuarioActualMiddleware`: the caller from the JWT, once per request, in `request.state` |
+| `database` | One pool; `get_conn`, `get_vetted_conn`, `get_tenant_conn`, `acquire_tenant` |
+| `clearance` | `require_permission`, `require_actor_permission`, `require_vetted_permission`, `enforce_permission` |
 | `rbac` | `check_permission`, `check_any_permission`, `resolve_caller_clearance`, `nivel_efectivo`, all fail-closed |
-| `tenant` | Slug validator (max 54 chars), schema naming, tenant state verdict, public-access rules |
+| `tenant` | Slug validator (max 54 chars), schema naming, entity existence verdict (no lifecycle states) |
 | `migrations` | Shared migration ledger and global lock |
 | `kek` | Versioned envelope encryption at rest (AES-256-GCM with AAD) |
 | `red_interna` | Blocks outbound connections to internal networks (SSRF) |
 | `secrets` | `require_secrets` startup check |
 | `health`, `request_log`, `metricas` | Probes, structured request log, Prometheus exporter |
 
-### api-gateway
+### docuboto (the process)
 
-The single public entry point: normalizes paths, rate-limits, validates the JWT through auth-service, vetoes suspended tenants, signs identity headers and reverse-proxies by an explicit prefix allowlist. No database. 30 Python files, 13 test files.
+The composition root in `services/docuboto/docuboto/`: `main.py` (`create_app`, the one definition of middleware and handlers), `config.py` (`CommonSettings` plus one `Settings` class per domain), `core/lifespan.py` (pool, Redis, every background loop in a `BackgroundTasks` group, heavy work behind `heavy_slot()`), `core/security.py`, `routers/health.py` and `routers/metrics.py`.
 
-**Middleware chain, outermost first** (`main.py`):
+**Middleware chain, outermost first**:
 
-1. `RequestContextMiddleware`: assigns and sanitizes `X-Request-Id`, writes the access line.
-2. `CORSMiddleware`: only when `CORS_ALLOW_ORIGINS` is set.
-3. `PathNormalizationMiddleware`: rejects `..` segments and forbidden characters.
-4. `RateLimitMiddleware`: Redis per-minute window per IP and global, with separate limits for login, PQRS and harvesting. Skipped if Redis is down.
-5. `JWTValidationMiddleware`: public paths pass; otherwise calls `GET /api/v1/auth/validate`, caches the result in Redis under an HMAC seal, vetoes by tenant state and injects `X-User-Id`, `X-Username`, `X-Tenant-Slug`, `X-User-Roles`, `X-Canal`, `X-Real-Ip`.
-6. `RateLimitPorUsuarioMiddleware`: per-user and per-tenant limits once identity is known.
+1. `SecurityHeadersMiddleware`: assigns and sanitizes `X-Request-Id`; adds `nosniff`, `DENY` and `no-referrer`.
+2. `RequestLogMiddleware`: one structured access line per request.
+3. `UsuarioActualMiddleware`: rejects `..` paths, validates the JWT in process, drops client identity headers.
+4. `UserRateLimitMiddleware`: per-person quota per minute (`RATE_LIMIT_PER_USER`), in memory.
 
-**Routers**: `proxy.py` (catch-all `/api/v1/{path}` with per-area body caps), `openapi.py` (merges 7 service specs into `/api/v1/openapi.json`), `health.py` (ready aggregates downstream status).
-
-**Routing table** (`routers/proxy.py`, first match wins):
-
-| Service | Prefixes under `/api/v1/` |
-| --- | --- |
-| auth-service | `auth/`, `audit/` |
-| tenant-service | `dependencias/`, `catalogos/`, `config/`, `business-days/`, `pinar/` (`tenants/` deliberately not routed) |
-| document-service | `documents/`, `metadata/`, `search/`, `reports/`, `public/`, `email/`, `envios/`, `terceros`, `anulaciones`, `desclasificaciones`, `plantillas/`, `borradores/`, `batch/documents`, `export`, `import` |
-| archive-service | `public/archive/` (before `public/`), `archive/`, `expedientes/`, `expediente-metadata/`, `tipos-documentales/`, `trd/`, `tvd/`, `ubicaciones/`, `unidades/`, `prestamos/`, `fuid`, `transferencias/`, `eliminacion/`, `batch/expedientes` |
-| storage-service | only `storage/upload` and `preservacion/{estado, plan, eventos, migrar-formato, migraciones}` |
-| workflow-service | `workflows/`, `workflow/rules/`, `workflow/admin/` |
-| notification-service | `notifications/`, `webhooks/`, `notification/admin/` |
-| signature-service | `signature/` |
-| knowledge-service | `knowledge/{search, antecedentes}` |
+Per-IP limits (general, login, anonymous filing, OAI/CMIS harvesting) live in `edge` (`infra/nginx/orpyca.conf.template`, `limit_req`).
 
 ### auth-service
 
-Authentication facade over Keycloak plus RBAC, user-role-dependency assignments (URD), security clearance, TOTP 2FA, custody of personal signing keys and the global audit log. 102 Python files, 41 test files.
+The identity issuer (login, rotating sessions, ES256 JWTs, JWKS, service accounts; ADR-048) plus RBAC, user-role-dependency assignments (URD), security clearance, TOTP 2FA, custody of personal signing keys and the global audit log. 102 Python files, 41 test files.
 
 | Router | Prefix | Capabilities |
 | --- | --- | --- |
@@ -451,13 +432,13 @@ SvelteKit 2 on Svelte 4 with Bulma, server-rendered, acting as backend-for-front
 
 | Area | Screens (`src/routes`) |
 | --- | --- |
-| Public `(public)` | `/` landing, `/login` (Keycloak PKCE), `/radicacion` (citizen PQRSD with ALTCHA), `/consulta` (status check), `/eliminacion` (published disposal inventories), `/indice-clasificados` |
+| Public `(public)` | `/` landing, `/login` (the app's own login form), `/radicacion` (citizen PQRSD with ALTCHA), `/consulta` (status check), `/eliminacion` (published disposal inventories), `/indice-clasificados` |
 | Operations `(app)` | `/dashboard`, `/radicar`, `/bandeja` (inbox and workflow), `/borradores` (drafts, rich editor), `/firmas`, `/anulaciones`, `/desclasificaciones`, `/envios`, `/correo`, `/busqueda`, `/reportes`, `/perfil` (2FA, signing key) |
 | Archive `(app)` | `/expedientes`, `/expedientes/[id]` (index, disposition, publication), `/transferencias`, `/archivo-fisico` |
 | Knowledge (gated) | Search / antecedentes tabs appear only when the entity flag and `PERM_CONOCIMIENTO` allow it; there is no «Preguntar» panel and no «Sugerir con antecedentes» button (ADR-051) |
 | Admin `(app)/admin` | `usuarios`, `grupos`, `auditoria`, `seguridad/claves`, `dependencias`, `trd`, `tvd`, `eliminacion`, `preservacion`, `pinar`, `metadatos`, `plantillas`, `catalogos`, `parametros` (includes the knowledge flag card), `flujos/reglas`, `flujos/reasignacion`, `correo`, `notificaciones`, `colas` (dead letters), `interoperabilidad`, `terceros` |
 
-**`src/lib`**: `components/` (116 files: `ui/` such as `DataTable`, `Modal`, `Stepper`; `layout/`; `workflow/`; about 30 `features/` widgets; `editor/RichEditor` lazy-loads TipTap), `server/` (client IP, fetch timeouts, security headers, HTML sanitizer), `services/auth.server.js` (PKCE, refresh, cookies), `stores/`, `utils/`, `guardianes/` (contract tests against backend gates).
+**`src/lib`**: `components/` (116 files: `ui/` such as `DataTable`, `Modal`, `Stepper`; `layout/`; `workflow/`; about 30 `features/` widgets; `editor/RichEditor` lazy-loads TipTap), `server/` (client IP, fetch timeouts, security headers, HTML sanitizer), `services/auth.server.js` (login, refresh, cookies), `stores/`, `utils/`, `guardianes/` (contract tests against backend gates).
 
 **Session**: `hooks.server.js` keeps `op_access_token` and `op_refresh_token` in httpOnly cookies, refreshes 15 s before expiry, sets `locals.user`, propagates the client IP, applies security headers and fetch timeouts; `(app)/+layout.server.js` redirects to `/login?next=` without a session.
 
@@ -512,7 +493,7 @@ Every capability in the table below sits on one stage of this path; the event pu
 | Email intake | IMAP and OAuth mailboxes, shared inbox (reserve, file, discard), filing receipt; automatic polling off by default, one tenant per deployment | document | Live |
 | Notifications and webhooks | Email on assignment, overdue, filing and returns; HMAC-signed webhooks with SSRF guard and encrypted secrets | notification | Live |
 | Interoperability | Export/import packages are live; OAI-PMH and CMIS are off by default (`public_interop_enabled`) | document, archive | Off by default |
-| Identity and access | Keycloak login, RBAC with CRUD levels, user-role-dependency (URD), context switch, clearance, TOTP, signing keys | auth | Live |
+| Identity and access | Own login and OIDC issuer (ADR-048), RBAC with CRUD levels, user-role-dependency (URD), context switch, clearance, TOTP, signing keys | auth | Live |
 | Audit | Hash-chained audit with denials, query and chain verification UI | auth, all | Live |
 | Tenant administration | Tenants with lifecycle state and suspension, dependencias tree, catalogs, holidays and business days, parameters, PINAR plan | tenant | Live |
 | MCP for external agents | Not available: Docuboto is not a tool server for agents; an agent uses the HTTP API with a scoped service account (ADR-051 §5) | — | Not available |
@@ -580,7 +561,6 @@ archive-service, storage-service, auth-service and tenant-service publish no str
 
 | System | Used by | Purpose | Default |
 | --- | --- | --- | --- |
-| Keycloak | auth-service, frontend, gateway | OIDC login, PKCE, token validation | Required |
 | TSA (RFC 3161), OCSP | signature-service | Timestamps and revocation evidence | Local in-process TSA in dev |
 | veraPDF, Ghostscript, WeasyPrint | storage-service | PDF/A validation, migration, rendering | Stub validator; migrator and renderer `none` |
 | SMTP | notification-service | Email | Mailpit in dev |
@@ -596,7 +576,7 @@ Security is enforced in layers and checked by 81 architecture guard tests, but t
 
 | Control | How it works | Where |
 | --- | --- | --- |
-| Authentication | Keycloak OIDC with PKCE; tokens in httpOnly cookies; gateway validates every call | frontend `hooks.server.js`, gateway `JWTValidationMiddleware` |
+| Authentication | The app issues ES256 JWTs (ADR-048); tokens in httpOnly cookies; `UsuarioActualMiddleware` verifies every call against the app's own keys | frontend `hooks.server.js`, `orpycamcp_common.usuario` |
 | Authorization | Permission + CRUD level resolved in the tenant DB on every request, never cached | `orpycamcp_common.rbac`, `require_permission` on every route |
 | Clearance (no-read-up) | Users and objects carry a security level; filters live in the SQL `WHERE` | `rbac.nivel_efectivo`, DLQ, inboxes, knowledge, audit |
 | Tenant isolation | Schema per tenant, `search_path` tenant-only, suspended tenants vetoed at edge and in each service | `get_tenant_conn`, ADR-035, ADR-044 |
@@ -611,22 +591,9 @@ Security is enforced in layers and checked by 81 architecture guard tests, but t
 
 Accepted residual risks: the rate limiter fails open without Redis; invalid tokens are not cached (one IP can force about 1,200 validations a minute); webhook deliveries are logged but have no durable table; no HSM/KMS, and the signing CA and TSA are local, verifiable but not accredited.
 
-### Tests by service
+### Tests by domain
 
-| Service | Unit test files | Integration test files | App lines | Test lines |
-| --- | --- | --- | --- | --- |
-| archive | 103 | 44 | 40,966 | 59,771 |
-| document | 82 | 47 | 28,171 | 34,269 |
-| signature | 61 | 16 | 16,126 | 25,359 |
-| storage | 52 | 15 | 13,157 | 19,515 |
-| auth | 24 | 17 | 9,908 | 11,925 |
-| workflow | 20 | 8 | 7,420 | 11,999 |
-| knowledge | 20 | 15 | 5,144 | 8,792 |
-| notification | 18 | 7 | 5,181 | 7,056 |
-| tenant | 11 | 6 | 5,323 | 4,947 |
-| api-gateway | 13 | 0 | 2,410 | 3,521 |
-
-api-gateway is the thinnest: no integration tests. Other suites: 81 guard test files in `shared/tests`, 7 system tests in `tests/e2e`, 301 Vitest files and 10 Playwright specs in the frontend (3 public, 7 authenticated). No Playwright job exists in CI. Integration tests skip unless `RUN_INTEGRATION=1`, so unit runs show large skipped counts (document: 741 passed, 219 skipped).
+Tests live in `services/docuboto/tests/<domain>/`. `scripts/test-app.sh unit|integration` runs each domain in its own pytest invocation from one install; integration recreates the database before each domain. Other suites: guard tests in `shared/tests`, Vitest and Playwright in the frontend. Integration tests skip unless `RUN_INTEGRATION=1`. The cross-service end-to-end stack (`tests/e2e`) was retired with the split topology.
 
 ### Architecture guard tests
 
@@ -634,19 +601,17 @@ api-gateway is the thinnest: no integration tests. Other suites: 81 guard test f
 
 - `test_toda_ruta_lleva_gate.py`: every route has a permission gate or a declared exception (400+ routes).
 - `test_permisos_existen.py`, `test_permisos_declarados.py`: every required permission is seeded.
-- `test_el_search_path_es_solo_el_tenant.py`, `test_todo_get_tenant_conn_mira_el_estado.py`: tenant isolation and suspension.
-- `test_identidad_un_solo_uso.py`, `test_sobre_de_evento_va_firmado.py`: signed identity and events.
-- `test_servicio_enrutado_no_conecta_como_propietario.py`: no routed service connects as DB owner.
-- `test_manifiesto_prod_seguro.py`, `test_prod_inmutable.py`, `test_matriz_ci_cubre_servicios.py`: production manifest and CI matrix.
+- `test_el_search_path_es_solo_el_tenant.py`, `test_una_sola_base_de_datos.py`: tenant isolation, and one database module whose dependencies check the entity first.
+- `test_contrato_api.py`, `test_sobre_de_evento_va_firmado.py`: cross-domain calls only through `<package>.api`; signed events.
+- `test_servicio_enrutado_no_conecta_como_propietario.py`: the app doesn't connect as DB owner.
+- `test_manifiesto_prod_seguro.py`, `test_prod_inmutable.py`, `test_ci_corre_la_app.py`: production manifest and CI.
 - `test_la_documentacion_dice_lo_que_hay.py`, `test_mensajes_en_espanol.py`, `test_todo_archivo_de_codigo_lleva_su_licencia.py`: docs facts, Spanish messages, license headers.
 
 Several guard tests carry ratchet allowlists (`EXCEPCIONES`, `SIN_NIVEL_DECLARADAS`) that are themselves a debt register: each entry is a known exception that should shrink.
 
 ### CI pipeline
 
-Stages: `validate` (ruff + mypy via `scripts/lint.sh`, dependency and npm audits) → `test` (unit matrix over the domain services, shared guards, integration on PostgreSQL, frontend lint/svelte-check/vitest/build, real WORM on RustFS, veraPDF, security smoke) → `review` (LLM review jobs) → `docs` (MkDocs) → `build` (images + Trivy) → `deploy`.
-
-Cost policy: after 391 of 400 runner minutes were used in August, everything except `lint` and `test-unit-shared` runs only on tags and merge requests, otherwise manually with `allow_failure: true`. The stated mitigation is running the full suite locally and in Docker before each commit.
+GitHub Actions (`.github/workflows/ci.yml`, ADR-053 §3). On every PR and push to `main`: `lint` (`scripts/lint.sh`: ruff + mypy over the app), `test-unit-shared`, `test-security-smoke` (`tests/docuboto` and the WORM purge gate) and `npm-audit`. On PRs, tags and manual runs: `test-unit` and `test-integration` (both `scripts/test-app.sh`), frontend lint/check/vitest/build, veraPDF by subprocess, MkDocs, and the real WORM suite on RustFS. `scripts/ci-local.sh` mirrors the same jobs locally.
 
 ## Tech debt, risks and open items
 
@@ -669,7 +634,7 @@ Priority below is a suggested starting point from this review, not a decision; l
 | Cross-service table writes: workflow writes `radicados`; document updates `flow_steps` | workflow, document | Hidden coupling blocks independent schema changes | Replace with internal API or events owned by the table's service | Medium | Open |
 | Uneven event reliability: workflow publishes best-effort with no outbox; `firma.*` events have no consumer | workflow, signature | Lost notifications after a Redis blip | Reuse the document-service outbox pattern in workflow | Medium | Open |
 | No Prometheus in the production manifest, no alerts; DLQ list loses the oldest above 1,000 pending; missing `phase=sealing` signals | Ops | Failures surface only when users complain | Add Prometheus + alert rules to prod compose; cursor-paginate DLQ | Medium | Open |
-| Thin tests where risk is high: api-gateway has no integration tests | gateway | The auth edge is least tested | Integration suite for gateway auth/veto | Medium | Open |
+| Edge rate limits are only tested by reading the nginx template | edge | A broken `limit_req` zone fails at nginx startup, not in CI | Smoke the template with `nginx -t` in CI | Low | Open |
 | Overdue detection only on manual `POST /overdue/scan` | workflow | Legal response deadlines can pass without alert | Add a periodic job like the archive loops | Medium | Open |
 | Annulment can be decided by one person end to end | document | Separation-of-duties gap flagged in roadmap | Require approver ≠ requester, as in declassification | Medium | Open |
 | Bloque C residue: reserve term does not expire automatically; `GET /trd/cuadro` has no `require_permission`; rolling renewal ignores S series marked `conservar`; `agotada` hold row cannot be reactivated | document, archive | Known compliance edge cases | Work the roadmap list (`docs/es/roadmap.md` L120–128) as a batch | Medium | Open |
@@ -719,7 +684,6 @@ Start every estimate by naming the owning service and the guard tests the change
 
 - [ ] Router file in the owning service, gated with `require_permission("PERM_X", min_crud=n)` and taking `get_tenant_conn`.
 - [ ] SQL only in `repositories/`; business logic in `services/`; Pydantic schemas in `schemas/`.
-- [ ] If it is a new path family, add the prefix to `api-gateway/app/routers/proxy.py` (order matters).
 - [ ] Read endpoints apply clearance in the SQL `WHERE`, not in Python.
 - [ ] Audit the action through `orpycamcp_common.audit`.
 - [ ] Spanish error messages in the standard error body.

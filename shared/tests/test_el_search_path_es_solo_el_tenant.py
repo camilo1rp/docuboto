@@ -26,10 +26,10 @@ calificados. Este guardián lo hace imposible de olvidar:
 
 from __future__ import annotations
 
-from tests._compose import glob_src
-
 import re
 from pathlib import Path
+
+from tests._compose import glob_src
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
@@ -298,7 +298,7 @@ _CREATE_EXTENSION = re.compile(r"CREATE\s+EXTENSION\b[^;]*", re.IGNORECASE)
 
 def test_create_extension_dice_with_schema_public():
     sin_esquema: list[str] = []
-    ficheros = list(SERVICIOS.glob("*/migrations/**/*.sql")) + [RAIZ / "scripts" / "init-db.sql"]
+    ficheros = list(SERVICIOS.glob("*/migrations/**/*.sql"))
     visto = 0
     for f in ficheros:
         if not f.exists():

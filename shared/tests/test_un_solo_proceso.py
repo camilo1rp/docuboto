@@ -12,7 +12,9 @@
 AST y manifiestos, sin importar FastAPI: CI de `test-unit-shared` no instala
 las apps. Un `include_router` de health de cada módulo duplicaría `/health`.
 El consumidor de ingesta PPI arranca en el lifespan de la app, y solo con
-`PPI_PROVIDER_URL` (ADR-051 §2); ni el worker ni knowledge-service lo arrancan.
+`PPI_PROVIDER_URL` (ADR-051 §2); knowledge no lo arranca. Sin `worker` ni
+`api-gateway` (ADR-047): los bucles pesados corren en la app y los manifiestos
+solo declaran la app y la infraestructura que ADR-048/049/050 aún no retiran.
 """
 
 from __future__ import annotations
@@ -34,17 +36,7 @@ _DOMINIO = (
     "signature-service",
     "knowledge-service",
 )
-_GATEWAY_URLS = (
-    "AUTH_SERVICE_URL",
-    "TENANT_SERVICE_URL",
-    "DOCUMENT_SERVICE_URL",
-    "ARCHIVE_SERVICE_URL",
-    "STORAGE_SERVICE_URL",
-    "WORKFLOW_SERVICE_URL",
-    "NOTIFICATION_SERVICE_URL",
-    "SIGNATURE_SERVICE_URL",
-    "KNOWLEDGE_SERVICE_URL",
-)
+
 
 
 def _arbol(ruta: Path) -> ast.AST:
@@ -96,9 +88,19 @@ def test_el_proceso_incluye_los_nueve_domain_routers() -> None:
         "KNOWLEDGE_ROUTERS",
     ):
         assert nombre in texto, f"docuboto.main no incluye {nombre}"
-    assert "include_router(_router)" in texto
+    assert "include_router(router)" in texto and "def create_app(" in texto
     assert "health_router" in texto
     assert "metrics_router" in texto
+
+
+def test_ningun_dominio_monta_su_propia_app() -> None:
+    """ADR-047: un `FastAPI`, una sonda, un `/metrics`. Los dominios exportan routers."""
+    for servicio in _DOMINIO:
+        texto = ruta_src(servicio, "main.py").read_text(encoding="utf-8")
+        assert "FastAPI(" not in texto, servicio
+        assert "lifespan" not in texto, servicio
+        assert not ruta_src(servicio, "routers", "health.py").exists(), servicio
+        assert not ruta_src(servicio, "routers", "metrics.py").exists(), servicio
 
 
 def test_un_solo_health_en_el_proceso() -> None:
@@ -132,42 +134,37 @@ def test_el_lifespan_arranca_la_ingesta_ppi_solo_con_proveedor() -> None:
 
 
 def test_knowledge_service_no_arranca_la_ingesta() -> None:
-    texto = (RAIZ / "services/knowledge-service/knowledge/main.py").read_text(encoding="utf-8")
+    texto = (RAIZ / "services/docuboto/knowledge/main.py").read_text(encoding="utf-8")
     assert "intelligence_consumer" not in texto
 
 
 def test_el_lifespan_arranca_los_bucles_del_proceso() -> None:
     texto = (RAIZ / "services/docuboto/docuboto/core/lifespan.py").read_text(encoding="utf-8")
-    arbol = ast.parse(texto)
-    llamados = [
-        nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", "")
-        for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.Call)
-    ]
-    assert "spawn_supervised" in llamados
     # The three Redis consumers that belong in this process.
-    assert "workflow_consumer" in texto
-    assert "stream_worker" in texto
-    assert "signature_consumer" in texto
-    assert "registrar_apertura_de_flujo" in texto
-    assert "abrir_al_radicar" in texto
-    assert "registrar_almacen" in texto
-    assert "bucle_trabajo" in texto
-    assert "_format_migration_loop" not in texto
-    assert "renovacion_lta" not in texto
+    for marca in (
+        "workflow_consumer",
+        "stream_worker",
+        "signature_consumer",
+        "registrar_apertura_de_flujo",
+        "abrir_al_radicar",
+        "BackgroundTasks",
+        "supervised=True",
+    ):
+        assert marca in texto, marca
+    # Lo que hacía el worker (ADR-047): migración de formato, LTA y la cola pesada,
+    # cada uno con su plaza de trabajo pesado.
+    assert "COLA_WORKER" in texto and "COLA_APP" in texto
+    assert "_format_migration_once" in texto
+    assert "renovacion_lta.run_once" in texto
+    assert texto.count("heavy_slot()") >= 2
+    trabajo = (RAIZ / "services/docuboto/docuboto/core/trabajo.py").read_text(encoding="utf-8")
+    assert "heavy_slot()" in trabajo
 
 
-def test_el_worker_hace_el_trabajo_pesado() -> None:
-    texto = (RAIZ / "services/docuboto/docuboto/core/lifespan_worker.py").read_text(
-        encoding="utf-8"
-    )
-    assert "intelligence_consumer" not in texto
-    assert "_format_migration_loop" in texto
-    assert "renovacion_lta" in texto
-    assert "bucle_trabajo" in texto
-    assert "rechazar_claves_de_cifrado" in texto
-    assert "validate_kek" not in texto
-    assert "_CLAVES_DE_CIFRADO" in texto
+def test_no_queda_proceso_worker() -> None:
+    assert not (RAIZ / "services/docuboto/docuboto/worker.py").exists()
+    assert not (RAIZ / "services/docuboto/docuboto/core/lifespan_worker.py").exists()
+    assert not (RAIZ / "infra" / "Dockerfile.worker").exists()
 
 
 def test_el_nonce_ppi_vive_en_tabla() -> None:
@@ -183,72 +180,57 @@ def test_el_nonce_ppi_vive_en_tabla() -> None:
 
 def test_el_dockerfile_vive_fuera_de_services() -> None:
     assert (RAIZ / "infra" / "Dockerfile.app").is_file()
-    assert (RAIZ / "infra" / "Dockerfile.worker").is_file()
-    assert not (RAIZ / "services" / "docuboto" / "Dockerfile").exists()
+    assert not list((RAIZ / "services").glob("*/Dockerfile"))
 
 
-def test_las_imagenes_llevan_los_xsd() -> None:
-    for nombre in ("Dockerfile.app", "Dockerfile.worker"):
-        texto = (RAIZ / "infra" / nombre).read_text(encoding="utf-8")
-        assert "archive-service/schemas/" in texto, nombre
-        assert "storage-service/schemas/" in texto, nombre
-        assert "/app/schemas/" in texto, nombre
+def test_la_imagen_lleva_los_xsd() -> None:
+    texto = (RAIZ / "infra" / "Dockerfile.app").read_text(encoding="utf-8")
+    assert "services/docuboto/schemas/" in texto
+    assert "/app/schemas/" in texto
 
 
-def test_la_imagen_app_no_lleva_jre() -> None:
-    app = (RAIZ / "infra" / "Dockerfile.app").read_text(encoding="utf-8")
-    worker = (RAIZ / "infra" / "Dockerfile.worker").read_text(encoding="utf-8")
-    for marca in ("openjdk", "default-jre", "verapdf"):
-        assert marca not in app.lower(), marca
-    assert "openjdk" in worker
-    assert "verapdf" in worker.lower()
-    assert "docuboto.worker:app" in worker
+def test_la_imagen_app_lleva_lo_que_llevaba_el_worker() -> None:
+    app = (RAIZ / "infra" / "Dockerfile.app").read_text(encoding="utf-8").lower()
+    for marca in ("openjdk", "verapdf", "ghostscript", "docuboto.main:app"):
+        assert marca in app, marca
 
 
-def test_postgres_y_keycloak_van_en_la_version_actual() -> None:
+def test_postgres_va_en_la_version_actual_y_keycloak_no_esta() -> None:
     for compose in (COMPOSE_DEV, RAIZ / "infra" / "docker-compose.prod.yml"):
         texto = compose.read_text(encoding="utf-8")
         assert "postgres:17-bookworm@sha256:" in texto
-        assert "keycloak:26.8.1@sha256:" in texto
         assert "postgres:15-" not in texto
-        assert "keycloak:24." not in texto
+        assert "keycloak" not in texto.lower(), "la identidad la emite la app (ADR-048)"
+
+
+#: Lo que un manifiesto puede declarar mientras ADR-049/050 no retiren Redis y
+#: el almacén de objetos. Keycloak ya salió (ADR-048).
+_PERMITIDOS = {
+    COMPOSE_DEV: {"migrate-docuboto", "postgres", "redis", "minio", "app", "frontend", "mailpit"},
+    RAIZ / "infra" / "docker-compose.prod.yml": {
+        "migrate-docuboto", "postgres", "redis", "minio", "app", "frontend", "edge",
+    },
+}
+
+
+def test_los_manifiestos_solo_declaran_la_app_y_su_infraestructura() -> None:
+    for manifiesto, permitidos in _PERMITIDOS.items():
+        svcs = servicios(manifiesto)
+        sobran = sorted(set(svcs) - permitidos)
+        assert not sobran, f"{manifiesto.name} declara {sobran} (ADR-047 §2)"
+        perfiles = {n: svc.get("profiles") for n, svc in svcs.items() if svc.get("profiles")}
+        # mailpit (buzón de desarrollo) es el único opcional; `split` no vuelve.
+        assert set(perfiles) <= {"mailpit"}, f"{manifiesto.name}: perfiles {perfiles}"
 
 
 def test_compose_dev_levanta_un_proceso_por_defecto() -> None:
-    svcs = servicios(COMPOSE_DEV)
-    assert "app" in svcs, "falta el servicio `app`"
-    app = svcs["app"]
-    assert app.get("profiles") in (None, []), "app no lleva perfil: es el default"
+    app = servicios(COMPOSE_DEV)["app"]
     build = app.get("build") or {}
     assert build.get("dockerfile") == "infra/Dockerfile.app"
-    worker = svcs["worker"]
-    assert worker.get("profiles") in (None, []), "worker no lleva perfil: es el default"
-    wbuild = worker.get("build") or {}
-    assert wbuild.get("dockerfile") == "infra/Dockerfile.worker"
-    for nombre in _DOMINIO:
-        perfiles = svcs[nombre].get("profiles") or []
-        assert perfiles == ["split"], f"{nombre} debe quedar en el perfil split: {perfiles}"
 
 
-def test_los_tokens_internos_tienen_alias_por_modulo() -> None:
-    pares = (
-        ("document-service", "DOCUMENT_INTERNAL_TOKEN"),
-        ("storage-service", "STORAGE_INTERNAL_TOKEN"),
-        ("archive-service", "ARCHIVE_INTERNAL_TOKEN"),
-        ("notification-service", "NOTIFICATION_INTERNAL_TOKEN"),
-        ("tenant-service", "TENANT_INTERNAL_TOKEN"),
-    )
-    for servicio, env in pares:
-        texto = ruta_src(servicio, "core/config.py").read_text(encoding="utf-8")
-        assert env in texto, servicio
-        assert "INTERNAL_SERVICE_TOKEN" in texto, servicio
-        assert "AliasChoices" in texto, servicio
-
-
-def test_el_trafico_no_pasa_por_el_gateway() -> None:
-    svcs = servicios(COMPOSE_DEV)
-    assert (svcs["api-gateway"].get("profiles") or []) == ["split"]
-    entorno = svcs["frontend"].get("environment") or []
+def test_el_frontend_habla_con_la_app() -> None:
+    entorno = servicios(COMPOSE_DEV)["frontend"].get("environment") or []
     pares = {}
     for item in entorno:
         if isinstance(item, str) and "=" in item:
@@ -256,46 +238,3 @@ def test_el_trafico_no_pasa_por_el_gateway() -> None:
             pares[k] = v
     assert pares.get("INTERNAL_API_URL") == "http://app:8000"
     assert pares.get("PUBLIC_API_URL") == "http://localhost:19000"
-
-
-def test_el_gateway_apunta_al_proceso() -> None:
-    entorno = servicios(COMPOSE_DEV)["api-gateway"].get("environment") or []
-    if isinstance(entorno, dict):
-        pares = entorno
-    else:
-        pares = {}
-        for item in entorno:
-            if isinstance(item, str) and "=" in item:
-                k, _, v = item.partition("=")
-                pares[k] = v
-    faltan = [k for k in _GATEWAY_URLS if pares.get(k) != "http://app:8000"]
-    assert not faltan, f"el gateway no apunta a app:8000: {faltan} → { {k: pares.get(k) for k in faltan} }"
-
-
-_KEK_WORKER = (
-    "TOTP_ENCRYPTION_KEY",
-    "SIGNING_KEY_ENCRYPTION_KEY",
-    "EMAIL_ENCRYPTION_KEY",
-    "WEBHOOK_SECRET_KEK",
-    "INTELLIGENCE_CREDENTIAL_KEK",
-)
-
-
-def _claves_entorno(svc: dict) -> set[str]:
-    entorno = svc.get("environment") or []
-    if isinstance(entorno, dict):
-        return set(entorno)
-    claves: set[str] = set()
-    for item in entorno:
-        if isinstance(item, str) and "=" in item:
-            claves.add(item.split("=", 1)[0])
-    return claves
-
-
-def test_el_worker_no_recibe_claves_de_cifrado() -> None:
-    for manifiesto in (COMPOSE_DEV, RAIZ / "infra" / "docker-compose.prod.yml"):
-        svcs = servicios(manifiesto)
-        assert "worker" in svcs, f"falta worker en {manifiesto.name}"
-        claves = _claves_entorno(svcs["worker"])
-        filtradas = [k for k in _KEK_WORKER if k in claves]
-        assert not filtradas, f"{manifiesto.name}: worker no debe recibir {filtradas}"

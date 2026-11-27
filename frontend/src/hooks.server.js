@@ -22,7 +22,7 @@
  *  - Registra errores inesperados; evita filtrar stack traces al cliente.
  */
 
-import { API_V1, KEYCLOAK_INTERNAL_BASE } from "$lib/utils/config.server.js";
+import { API_V1 } from "$lib/utils/config.server.js";
 import { conIpDelCliente, instalarPropagacionDeIp } from "$lib/server/clientIp.js";
 import { instalarTiempoLimite } from "$lib/server/fetchTimeout.js";
 import { aplicarCabecerasDeSeguridad } from "$lib/server/securityHeaders.js";
@@ -50,12 +50,12 @@ export async function handle({ event, resolve }) {
   // IP que acaba en el `audit_log` no es la de nadie.
   instalarPropagacionDeIp(API_V1);
 
-  // Tiempo límite de RESPUESTA para gateway y Keycloak (ver
+  // Tiempo límite de RESPUESTA para la app (ver
   // $lib/server/fetchTimeout.js). Sin él, un upstream que acepta la conexión y
   // no contesta cuelga la petición del SSR para siempre, y el layout privado
   // hace tres llamadas por navegación: el frontend entero deja de responder por
   // una degradación que el backend ya sabe acotar.
-  instalarTiempoLimite([API_V1, KEYCLOAK_INTERNAL_BASE]);
+  instalarTiempoLimite([API_V1]);
 
   let accessToken = cookies.get(COOKIE_ACCESS_TOKEN);
   const refreshToken = cookies.get(COOKIE_REFRESH_TOKEN);

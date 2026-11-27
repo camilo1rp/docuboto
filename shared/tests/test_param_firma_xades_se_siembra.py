@@ -28,8 +28,8 @@ from pathlib import Path
 from tests._chain import seed_rows
 
 RAIZ = Path(__file__).resolve().parents[2]
-LECTOR = RAIZ / "services" / "signature-service" / "signature" / "core" / "params_entidad.py"
-ESCRITOR = RAIZ / "services" / "tenant-service" / "tenant" / "routers" / "config.py"
+LECTOR = RAIZ / "services" / "docuboto" / "signature" / "core" / "params_entidad.py"
+ESCRITOR = RAIZ / "services" / "docuboto" / "tenant" / "routers" / "config.py"
 
 
 def _literal(fuente: Path, nombre: str):
@@ -53,7 +53,7 @@ def test_la_clave_que_lee_signature_se_siembra_en_clasificados() -> None:
 
 
 def test_el_respaldo_del_entorno_tambien_es_clasificados() -> None:
-    config = RAIZ / "services" / "signature-service" / "signature" / "core" / "config.py"
+    config = RAIZ / "services" / "docuboto" / "docuboto" / "config.py"
     texto = config.read_text(encoding="utf-8")
     assert re.search(
         r'firma_personal_require_xades: Literal\["off", "clasificados", "todos"\] = "clasificados"',

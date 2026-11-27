@@ -58,12 +58,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: services/*/requirements.lock
+          cache-dependency-path: services/docuboto/requirements.lock
       # El MISMO gate que corre un desarrollador (`LINT_IN_PROCESS=1` solo evita
       # Docker): reimplementarlo aquí es cómo CI aprueba lo que el gate rechaza.
       - run: |
           pip install --quiet 'ruff>=0.4.0' 'mypy==1.11.0' ./shared
-          for lock in services/*/requirements.lock; do pip install --quiet -r "$lock"; done
+          pip install --quiet -r services/docuboto/requirements.lock
       - run: LINT_IN_PROCESS=1 ./scripts/lint.sh
 
   test-unit-shared:
@@ -83,24 +83,18 @@ jobs:
       - run: pytest tests/ -q --tb=short
         working-directory: shared
 
+  # Las puertas que no pueden quedar abiertas, en cada push: el gate de ruta de
+  # toda la app y las rutas de purga WORM de storage.
   test-security-smoke:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - service: api-gateway
-            tests: "tests/test_gateway.py -k 'internal or canal'"
-          - service: storage-service
-            tests: "tests/test_internal_token_gate.py tests/test_aip_internal_gate.py tests/test_eventos_internal_gate.py tests/test_purge_worm_gate.py"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install --quiet ./shared -r "services/${{ matrix.service }}/requirements.lock"
-      - run: eval "pytest -q --tb=short ${{ matrix.tests }}"
-        working-directory: services/${{ matrix.service }}
+      - run: pip install --quiet ./shared -r services/docuboto/requirements.lock
+      - run: pytest -q --tb=short tests/docuboto tests/storage/test_purge_worm_gate.py
+        working-directory: services/docuboto
 
   npm-audit:
     runs-on: ubuntu-latest
@@ -116,46 +110,25 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
 
   # ─── Completo ─────────────────────────────────────────────────────────────
+  # Una app, una instalación (ADR-047). Cada `tests/<dominio>/` corre en su
+  # propia invocación de pytest: los conftest de dominio fijan entorno y
+  # neutralizan piezas propias, y en una sola sesión el orden decidiría.
   test-unit:
     if: ${{ github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        service:
-          - api-gateway
-          - auth-service
-          - tenant-service
-          - document-service
-          - archive-service
-          - storage-service
-          - workflow-service
-          - notification-service
-          - signature-service
-          - knowledge-service
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       # Desde el `.lock` y con `shared/`, como el Dockerfile.
-      - run: pip install --quiet ./shared -r "services/${{ matrix.service }}/requirements.lock"
-      - run: pytest tests/ -q --tb=short
-        working-directory: services/${{ matrix.service }}
+      - run: pip install --quiet ./shared -r services/docuboto/requirements.lock
+      - run: ../../scripts/test-app.sh unit
+        working-directory: services/docuboto
 
   test-integration:
     if: ${{ github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        service:
-          - auth-service
-          - document-service
-          - archive-service
-          - storage-service
-          - signature-service
-          - workflow-service
     services:
       postgres:
         image: postgres:17-bookworm
@@ -183,20 +156,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install --quiet ./shared -r "services/${{ matrix.service }}/requirements.lock"
-      # La cadena única primero (ADR-053): el conftest provisiona esquemas de tenant
-      # pero da por hechas las migraciones de `public`.
-      - run: python services/docuboto/migrations/runner.py
-      # Sin `-m integration`: la convención de marcas no es uniforme; el directorio
-      # es el criterio y RUN_INTEGRATION=1 el gate. La batería WORM real la corre
+      - run: pip install --quiet ./shared -r services/docuboto/requirements.lock
+      # Base de datos nueva y cadena única (ADR-053) antes de cada dominio: el
+      # conftest provisiona esquemas de tenant pero da por hechas las
+      # migraciones de `public`. La batería WORM real la corre
       # `storage-worm-real`, que tiene un almacén de objetos en pie.
-      - run: |
-          EXTRA=""
-          if [ "${{ matrix.service }}" = "storage-service" ]; then
-            EXTRA="--ignore=tests/integration/test_worm_object_lock_real_s3.py"
-          fi
-          pytest -q tests/integration --tb=short $EXTRA
-        working-directory: services/${{ matrix.service }}
+      - run: ../../scripts/test-app.sh integration
+        working-directory: services/docuboto
 
   test-frontend:
     if: ${{ github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') }}
@@ -221,7 +187,7 @@ jobs:
     if: ${{ github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     env:
-      VERAPDF_BINARY: ${{ github.workspace }}/services/storage-service/tests/fakes/fake_verapdf.py
+      VERAPDF_BINARY: ${{ github.workspace }}/services/docuboto/tests/storage/fakes/fake_verapdf.py
       PDFA_VALIDATOR: verapdf
       PRESERVATION_PDFA_VALIDATION_ENABLED: "true"
     steps:
@@ -229,10 +195,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: chmod +x services/storage-service/tests/fakes/fake_verapdf.py
-      - run: pip install --quiet ./shared -r services/storage-service/requirements.lock
-      - run: pytest tests/test_subprocess_verapdf_ci_smoke.py -q --tb=short
-        working-directory: services/storage-service
+      - run: chmod +x services/docuboto/tests/storage/fakes/fake_verapdf.py
+      - run: pip install --quiet ./shared -r services/docuboto/requirements.lock
+      - run: pytest tests/storage/test_subprocess_verapdf_ci_smoke.py -q --tb=short
+        working-directory: services/docuboto
 
   docs-build:
     if: ${{ github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') }}
@@ -292,7 +258,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install --quiet ./shared -r services/storage-service/requirements.lock
+      - run: pip install --quiet ./shared -r services/docuboto/requirements.lock
       # Sin esperar, el primer test fallaría por conexión y parecería que el motor
       # reprueba el WORM.
       - run: |
@@ -300,5 +266,5 @@ jobs:
             python -c "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')" && break
             sleep 2
           done
-      - run: pytest -q tests/integration/test_worm_object_lock_real_s3.py --tb=short
-        working-directory: services/storage-service
+      - run: pytest -q tests/storage/integration/test_worm_object_lock_real_s3.py --tb=short
+        working-directory: services/docuboto

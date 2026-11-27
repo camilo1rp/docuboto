@@ -63,7 +63,7 @@ OrpycaMCP implements these standards in free software, allowing any institution 
 | **Expedientes** (case files) | Grouping of radicados by subject or case, with their own lifecycle |
 | **TRD** | Tabla de Retención Documental (document retention schedule) — classifies and determines final disposition |
 | **Multi-entity** | A single installation serves multiple institutions with fully isolated data |
-| **Authentication** | Keycloak with LDAP support for integration with institutional directories |
+| **Authentication** | Identity issued by the application itself: argon2id passwords, JWTs with a published JWKS and an OIDC issuer for integrations (ADR-048) |
 
 ---
 
@@ -86,7 +86,7 @@ OrpycaMCP reimplements the original [Orfeo GPL](https://github.com/orfeosgd/orfe
 | Stack | PHP 7 + Apache | FastAPI (Python 3.11) |
 | Architecture | Monolithic | Microservices |
 | File storage | Server file system | RustFS (S3-compatible, ADR-027) |
-| Authentication | PHP sessions + optional LDAP | Keycloak (SSO, LDAP, OAuth2) |
+| Authentication | PHP sessions + optional LDAP | Own identity (argon2id, JWT, OIDC for machines) |
 | Multi-entity | One installation per entity | Native multi-tenant |
 | API | No standard REST API | Full OpenAPI / REST |
 | Documentation | Limited | Automatic, bilingual, published |
@@ -104,7 +104,6 @@ docker compose up -d
 ```
 
 Explore the API at `http://localhost:8080/docs`
-Manage Keycloak at `http://localhost:8180/admin` (admin / orpycamcp_dev)
 
 ---
 

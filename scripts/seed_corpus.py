@@ -869,7 +869,7 @@ def cli() -> int:
     p = argparse.ArgumentParser(
         description="Siembra un corpus de pruebas con volumen y variedad en el tenant demo"
     )
-    p.add_argument("--gateway", default="http://localhost:19080")
+    p.add_argument("--gateway", default="http://localhost:19000")
     p.add_argument("--radicados", type=int, default=180)
     p.add_argument("--expedientes", type=int, default=12)
     p.add_argument("--terceros", type=int, default=40)

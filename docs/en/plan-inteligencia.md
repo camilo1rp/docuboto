@@ -108,7 +108,7 @@ It only removes code, and it stops today's default of sending content to ollama.
   CLASIFICADA one level at a time, with a declaration naming that level's model route,
   models and subprocessors from `capabilities`. Disabling a level is immediate and orders
   deletion of what was sent at that level.
-- **`scripts/init_tenant.py`.** Creates one client-credentials Keycloak client per entity.
+- **`scripts/init_tenant.py`.** Registers one service account per entity in `public.auth_service_accounts` (ADR-048); the app signs its token in-process.
   It is not added to `ALLOWED_AZP`.
 - **Frontend.** An admin screen. On `local`,
   the admin screen shows how many records the provider still holds, and the switch to

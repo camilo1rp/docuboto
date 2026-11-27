@@ -155,8 +155,8 @@ fi
 # 1. Parar las aplicaciones — NO la infraestructura
 # ---------------------------------------------------------------------------
 # Postgres y MinIO tienen que seguir arriba: son el destino de la restauración.
-# Keycloak también se para: sus tablas viven en el mismo `$DB_NAME` (schema
-# `keycloak`) y restaurar bajo sus pies lo deja con una caché incoherente.
+# La app se para: las personas, sus sesiones y las claves de firma de los JWT
+# viven en la misma base (ADR-048).
 
 # ── Decisiones fail-closed (funciones aparte para poder probarlas) ──────────
 #
@@ -292,10 +292,7 @@ echo "── Parando servicios de aplicación..."
 # `|| true`: parar un servicio que no está levantado no es un error, y bajo
 # `set -e` abortaría la restauración por algo que no importa.
 "${COMPOSE[@]}" stop \
-    app worker \
-    api-gateway auth-service tenant-service document-service storage-service \
-    workflow-service archive-service notification-service signature-service \
-    knowledge-service frontend keycloak || true
+    app frontend || true
 
 
 # ── Extremo de audit_log ANTES de restaurar (ARC-M4) ────────────────────────
@@ -522,6 +519,6 @@ echo "── Levantando servicios..."
 
 echo "══ RESTAURACIÓN COMPLETA ══"
 echo "Comprueba antes de dar el servicio por bueno:"
-echo "  - login de un usuario real (Keycloak reconstruye su caché al arrancar)"
+echo "  - login de un usuario real (las sesiones restauradas son las del respaldo)"
 echo "  - un radicado con anexo: consultarlo y DESCARGARLO (BD + MinIO a la vez)"
 echo "  - GET /api/v1/audit/verify de un tenant, desde la aplicación"

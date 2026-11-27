@@ -30,11 +30,6 @@ vi.mock("$lib/services/auth.server.js", () => ({
   clearSessionCookies: (...args) => clearSessionCookies(...args),
 }));
 
-vi.mock("$lib/utils/config.js", () => ({
-  KEYCLOAK_LOGOUT_URL: "http://kc.local/realms/orpycamcp/protocol/openid-connect/logout",
-  KEYCLOAK_CLIENT_ID: "orpycamcp-frontend",
-}));
-
 const modulo = await import("./+page.server.js");
 
 /** Cookies mínimas: solo lo que usa la action. */
@@ -54,33 +49,28 @@ describe("/logout — solo POST", () => {
     expect(modulo.load).toBeUndefined();
   });
 
-  it("la action POST revoca en Keycloak, borra cookies y redirige", async () => {
+  it("la action POST revoca en la app, borra cookies y redirige", async () => {
     const cookies = cookiesCon("rt-1");
 
     await expect(
       modulo.actions.default({ cookies, url: new URL("http://app.local/logout") }),
-    ).rejects.toMatchObject({ status: 302 });
+    ).rejects.toMatchObject({ status: 303 });
 
     expect(revokeSession).toHaveBeenCalledWith("rt-1");
     expect(clearSessionCookies).toHaveBeenCalledWith(cookies);
   });
 
-  it("la redirección va al end_session_endpoint con vuelta a /login", async () => {
+  it("la redirección vuelve a /login, en este mismo origen (ADR-048)", async () => {
     let destino = "";
     await modulo.actions
       .default({ cookies: cookiesCon("rt-1"), url: new URL("http://app.local/logout") })
       .catch((e) => {
         destino = e.location;
       });
-
-    const url = new URL(destino);
-    expect(url.origin + url.pathname).toBe(
-      "http://kc.local/realms/orpycamcp/protocol/openid-connect/logout",
-    );
-    expect(url.searchParams.get("post_logout_redirect_uri")).toBe("http://app.local/login");
+    expect(destino).toBe("/login");
   });
 
-  it("sin refresh_token no llama a Keycloak, pero limpia las cookies igual", async () => {
+  it("sin refresh_token no revoca nada, pero limpia las cookies igual", async () => {
     // La sesión local debe morir aunque la revocación remota no aplique: dejar
     // cookies vivas por no tener a quién revocar sería lo peor de los dos.
     await modulo.actions

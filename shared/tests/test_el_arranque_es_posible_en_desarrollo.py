@@ -29,8 +29,6 @@ es su motivo de existir).
 
 from __future__ import annotations
 
-from tests._compose import glob_src
-
 import re
 from pathlib import Path
 
@@ -76,22 +74,9 @@ def _variables_declaradas() -> dict[str, set[str]]:
 def _secretos_exigidos() -> dict[str, set[str]]:
     """`{servicio: {VARIABLES que su lifespan exige presentes}}`."""
     exigidos: dict[str, set[str]] = {}
-    mains = list(glob_src(SERVICIOS, "*/app/main.py"))
-    extra = SERVICIOS / "docuboto" / "docuboto" / "main.py"
-    if extra.is_file():
-        mains.append(extra)
-    worker = SERVICIOS / "docuboto" / "docuboto" / "worker.py"
-    if worker.is_file():
-        partes = [worker.read_text(encoding="utf-8")]
-        lw = worker.parent / "core" / "lifespan_worker.py"
-        if lw.is_file():
-            partes.append(lw.read_text(encoding="utf-8"))
-        claves: set[str] = set()
-        for bloque in _LLAMADA.findall("\n".join(partes)):
-            claves.update(_CLAVE.findall(bloque))
-        if claves:
-            exigidos["worker"] = claves
-    for main in sorted(set(mains)):
+    # Un proceso (ADR-047): solo cuenta el lifespan que de verdad arranca.
+    mains = [SERVICIOS / "docuboto" / "docuboto" / "main.py"]
+    for main in mains:
         servicio = main.parents[1].name
         partes = [main.read_text(encoding="utf-8")]
         lifespan = main.parent / "core" / "lifespan.py"
@@ -110,9 +95,8 @@ def test_el_censo_encuentra_las_dos_mitades() -> None:
     """Anti-vacuidad: sin esto, un parser roto dejaría el guardián verde y mudo."""
     exigidos = _secretos_exigidos()
     declaradas = _variables_declaradas()
-    assert len(exigidos) >= 5, f"apenas se reconocieron {len(exigidos)} servicios con guardián"
-    assert "SIGNATURE_SECRET" in exigidos.get("signature-service", set())
-    assert declaradas.get("document-service"), "no se leyó el entorno del compose"
+    assert "SIGNATURE_SECRET" in exigidos.get("docuboto", set()), exigidos
+    assert declaradas.get("app"), "no se leyó el entorno del compose"
 
 
 def test_ningun_servicio_exige_un_secreto_que_el_compose_no_entrega() -> None:

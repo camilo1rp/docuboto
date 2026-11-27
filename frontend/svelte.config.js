@@ -65,14 +65,8 @@ const config = {
         "connect-src": ["self"],
         "object-src": ["none"],
         "base-uri": ["self"],
-        // Base mínima. Los formularios de la aplicación envían a este origen,
-        // PERO el de cierre de sesión termina en el `end_session_endpoint` de
-        // Keycloak, que es otro. Ese origen se añade en RUNTIME desde
-        // `securityHeaders.js`, porque la URL pública de Keycloak es
-        // `$env/dynamic/public` y aquí solo se conocería la del build. Este
-        // comentario decía «el logout y los formularios envían solo a este
-        // origen»: era falso, y su consecuencia fue que el botón de salir no
-        // hacía nada — Chrome bloqueaba el envío y nadie veía por qué.
+        // Los formularios envían solo a este origen, login y logout incluidos:
+        // la identidad la emite la app detrás del SSR (ADR-048).
         "form-action": ["self"],
         "frame-ancestors": ["none"],
       },

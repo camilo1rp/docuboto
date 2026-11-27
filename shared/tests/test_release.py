@@ -63,7 +63,7 @@ def _con_placeholder() -> set[str]:
 def test_the_plan_builds_every_image_the_manifest_names() -> None:
     planned = {e["service"] for e in release.plan()}
     assert _con_placeholder() <= planned, f"not built: {sorted(_con_placeholder() - planned)}"
-    assert {*servicios_propios(), "frontend", "app", "worker"} <= planned
+    assert {*servicios_propios(), "frontend"} <= planned
     for e in release.plan():
         assert (RAIZ / e["dockerfile"]).is_file(), e
         assert (RAIZ / e["context"]).is_dir(), e
@@ -165,5 +165,5 @@ def test_the_version_is_in_health_and_in_the_database() -> None:
     runner = (RAIZ / "services" / "docuboto" / "migrations" / "runner.py").read_text(encoding="utf-8")
     assert "INSERT INTO public.schema_version" in runner and "await conn.execute(RECORD_VERSION" in runner
     assert (RAIZ / "services" / "docuboto" / "migrations" / "global" / "060_schema_version.sql").is_file()
-    for f in [RAIZ / "infra" / "Dockerfile.app", RAIZ / "infra" / "Dockerfile.worker"]:
+    for f in [RAIZ / "infra" / "Dockerfile.app"]:
         assert "ARG ORPYCA_VERSION" in f.read_text(encoding="utf-8"), f

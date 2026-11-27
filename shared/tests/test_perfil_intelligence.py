@@ -83,7 +83,7 @@ def test_el_manifiesto_base_no_incluye_el_fragmento() -> None:
 
 def test_sin_el_perfil_la_pasarela_no_sale_a_ppi() -> None:
     for base, _extra in PARES:
-        for nombre in ("app", "knowledge-service"):
+        for nombre in ("app",):
             servicio = servicios(base)[nombre]
             assert "ppi" not in _redes(servicio)
             assert "PPI_PROVIDER_URL" not in _texto_entorno(servicio)

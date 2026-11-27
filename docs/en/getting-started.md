@@ -4,12 +4,13 @@
 
 - Docker 24+ and Docker Compose v2
 - Hardware: the only figure is in [Deployment](deployment.md#minimum-hardware)
-- Free ports: 19080, 19180, 15432, 19900, 16379
+- Free ports: 19000, 19180, 19300, 15432, 19900, 16379
 
-> Internal services keep listening on 8001-8011/8080 inside the `orpycamcp-net`
-> Docker network; what changes is the port **published** to the host (19xxx /
-> 15432 / 16379 range) to avoid clashing with other local dev stacks. See the full
-> table in [Architecture](architecture.md#services-and-ports).
+> The app is one process (ADR-047): it listens on 8000 inside the `orpycamcp-net` Docker
+> network and is published on `127.0.0.1:19000`. There's no `api-gateway` anymore (19080 is
+> unused) and no port per service. The ports **published** to the host (19xxx / 15432 /
+> 16379 range) avoid clashing with other local dev stacks. See the full table in
+> [Architecture](architecture.md#the-process-and-its-containers).
 
 ## Local Installation (development)
 
@@ -21,19 +22,46 @@ cd orfeo_mcp
 # 2. Start the full infrastructure
 docker compose --profile dev up -d
 
-# 3. Verify the services are running
+# 3. Verify the containers are running
+#    (migrate-docuboto exits after applying the migrations; app waits for it)
 docker compose ps
 ```
 
 To join a local provider over PPI, add `-f docker-compose.intelligence.yml` (it only adds `app` to the `ppi` network) and set `PPI_PROVIDER_URL`: with it set, the ingestion consumer starts in the app's lifespan; empty, no call leaves. The start order, the `ppi` network, and the first **Inteligencia** check live in the provider's `docs/runbooks/local-dev.md` (section "Join a local Docuboto").
 
+## Tests
+
+The app's tests live in `services/docuboto/tests/<domain>/` (one folder per domain package,
+plus `tests/docuboto/` for the composition root). From `services/docuboto`, with the
+environment's `python`/`pytest` on your PATH:
+
+```bash
+../../scripts/test-app.sh unit              # each tests/<domain>/, one at a time
+../../scripts/test-app.sh unit archive      # only those domains
+../../scripts/test-app.sh integration       # each tests/<domain>/integration/
+```
+
+Each domain runs in **its own pytest invocation**: domain `conftest` files set their own
+environment, and in a single session the collection order would decide the result. The script
+derives the domain list from the tree. `integration` needs `DATABASE_URL`, `REDIS_URL`, and
+`RUN_INTEGRATION=1`, and it recreates the database and flushes Redis before each domain.
+
+To run locally what `.github/workflows/ci.yml` runs:
+
+```bash
+./scripts/ci-local.sh lint shared smoke     # the jobs you name
+./scripts/ci-local.sh all                   # every job
+```
+
+`scripts/ci-local.sh` mirrors `ci.yml` (change one, change the other); `integration` starts a
+throwaway PostgreSQL and Redis. `./scripts/lint.sh` runs ruff and mypy over the whole app.
+
 ## Access URLs
 
 | Service | URL | Dev credentials |
 |---|---|---|
-| API Gateway (docs) | http://localhost:19080/docs | — |
+| App API (docs) | http://localhost:19000/docs | — |
 | Frontend (SvelteKit) | http://localhost:19300 | — |
-| Keycloak Admin | http://localhost:19180/admin | admin / orpycamcp_dev |
 | Object store (S3 API) | http://localhost:19900 | orpycamcp / orpycamcp_dev |
 
 > The object store is **RustFS** since ADR-027 (MinIO archived its open-source project and
@@ -41,21 +69,21 @@ To join a local provider over PPI, add `-f docker-compose.intelligence.yml` (it 
 > `http://localhost:19900` to inspect buckets.
 
 | PostgreSQL | localhost:15432 | orpycamcp / orpycamcp |
-| MailHog (email dev) | http://localhost:8025 | — |
+| Mailpit (email dev) | http://localhost:8025 | — |
 
 ## First Document Registration
 
 A `radicado` is an official document registered with a unique, immutable tracking number.
 
 ```bash
-# 1. Obtain an access token (via the gateway, not directly against the service)
-TOKEN=$(curl -s -X POST 'http://localhost:19080/api/v1/auth/token' \
+# 1. Obtain an access token (against the app, port 19000)
+TOKEN=$(curl -s -X POST 'http://localhost:19000/api/v1/auth/login' \
   -H 'Content-Type: application/json' \
   -d '{"username": "operador", "password": "orpycamcp_dev", "tenant_slug": "demo"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 # 2. Register an incoming document
-curl -X POST 'http://localhost:19080/api/v1/documents' \
+curl -X POST 'http://localhost:19000/api/v1/documents' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -70,16 +98,16 @@ The response includes the assigned `radicado` (tracking) number (e.g.: `2024-DEM
 
 ## Add a tenant (institution)
 
-A `tenant` is an institution served by a shared OrpycaMCP installation.
+A `tenant` is the institution an installation serves. One installation serves one entity (ADR-047 §3).
 
-Onboarding an institution is a platform operation: `/api/v1/tenants` is **not exposed by the gateway**
+Onboarding the institution is a platform operation with no HTTP route
 (see [Multi-tenancy](multi-tenancy.md)). Use the provisioning script:
 
 ```bash
 ./scripts/init-tenant.sh mi-entidad "Mi Entidad Pública" MENT
 ```
 
-This provisions the `tenant_mi_entidad` schema (each tenant's isolated database schema, named `tenant_{slug}`) in PostgreSQL (the slug takes lowercase letters, digits and hyphens; the hyphen becomes an underscore in the schema), applies the migrations and activates the institution.
+This provisions the `tenant_mi_entidad` schema (each tenant's isolated database schema, named `tenant_{slug}`) in PostgreSQL (the slug takes lowercase letters, digits and hyphens; the hyphen becomes an underscore in the schema) and applies the migrations. The entity has no lifecycle states: once it exists with its schema, it's served.
 
 ## Load initial TRD (seed)
 
@@ -117,7 +145,7 @@ The Spanish final-disposition values are mapped to OrpycaMCP codes (`conserve`, 
 python3 scripts/migrate_trd_from_fondecund.py \
   mi_entidad_trd.json \
   --tenant-slug mi_entidad \
-  --output services/archive-service/migrations/seeds/trd_mi_entidad.sql
+  --output services/docuboto/migrations/seeds/trd_mi_entidad.sql
 ```
 
 **3. Apply the migration in the tenant's schema:**
@@ -125,7 +153,7 @@ python3 scripts/migrate_trd_from_fondecund.py \
 ```bash
 docker compose exec postgres psql -U orpycamcp -d orpycamcp_db \
   -c "SET search_path TO tenant_mi_entidad;" \
-  -f services/archive-service/migrations/seeds/trd_mi_entidad.sql
+  -f services/docuboto/migrations/seeds/trd_mi_entidad.sql
 ```
 
 **Retention and producing department (C-4).** The script requires `retencion_gestion` **and** `retencion_central` in the source JSON (it stops naming the series that lacks them: it does not invent retention times). A series seeded this way is `migrada` or `borrador` and has **no producing department**; for it to govern and appear in the classification scheme, open a new version with `dependencias_productoras` (`POST /api/v1/trd/{code}/versiones`), approve it and validate it.
@@ -151,18 +179,18 @@ behind each entity is in [Document domain](domain.md).
 
 ```bash
 # 1. Create the expediente (requires a TRD configured for the series)
-curl -X POST 'http://localhost:19080/api/v1/expedientes' \
+curl -X POST 'http://localhost:19000/api/v1/expedientes' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"nombre": "Contract 2024-001 — Office supplies", "serie_id": "uuid-serie"}'
 # Response: { "id": "uuid-expediente", "estado": "open", ... }
 
 # 2. Link the radicado created earlier
-curl -X POST 'http://localhost:19080/api/v1/expedientes/uuid-expediente/radicados' \
+curl -X POST 'http://localhost:19000/api/v1/expedientes/uuid-expediente/radicados' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"radicado_id": "uuid-radicado"}'
 
 # 3. Close the expediente (generates and signs the electronic index, see Lifecycle)
-curl -X PATCH 'http://localhost:19080/api/v1/expedientes/uuid-expediente' \
+curl -X PATCH 'http://localhost:19000/api/v1/expedientes/uuid-expediente' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"estado": "closed"}'
 ```
@@ -177,7 +205,7 @@ signature is anchored to the digest of the current text, so the turn that record
 ```bash
 # 1. Open the circuit over the radicado (Salida or Interno: what the institution
 #    produces; an incoming document was signed by whoever sent it)
-curl -X POST 'http://localhost:19080/api/v1/signature/requests' \
+curl -X POST 'http://localhost:19000/api/v1/signature/requests' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"objeto_tipo": "radicado", "objeto_id": "uuid-radicado",
        "titulo": "Signature of the reply letter",
@@ -185,11 +213,11 @@ curl -X POST 'http://localhost:19080/api/v1/signature/requests' \
 # Response: { "solicitud_id": "uuid", "estado": "pendiente", "items": [ … ] }
 
 # 2. Request the second factor for your own turn (OTP by email, or TOTP)
-curl -X POST 'http://localhost:19080/api/v1/signature/requests/uuid-solicitud/challenge' \
+curl -X POST 'http://localhost:19000/api/v1/signature/requests/uuid-solicitud/challenge' \
   -H "Authorization: Bearer $TOKEN"
 
 # 3. Sign the turn with the code received
-curl -X POST 'http://localhost:19080/api/v1/signature/requests/uuid-solicitud/sign' \
+curl -X POST 'http://localhost:19000/api/v1/signature/requests/uuid-solicitud/sign' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"totp_code": "123456"}'
 ```
@@ -203,7 +231,7 @@ Several people sign **in order**: turn 2 does not open until turn 1 is resolved
 (RF-FIR-04). Each signer sees it in their `/firmas` inbox when their turn comes.
 
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/signature/requests' \
+curl -X POST 'http://localhost:19000/api/v1/signature/requests' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"objeto_tipo": "expediente", "objeto_id": "uuid-expediente",
        "titulo": "Cierre del expediente",
@@ -228,10 +256,10 @@ or rejected first.
 
 ### Search knowledge (full-text fallback, ADR-046)
 
-> **The knowledge layer is opt-in per entity (ADR-037).** New entities are born with it **off**: the entity administrator (`USUA_PERM_ADMIN` level 3) switches it on in **/admin/parametros** (or with `PUT /api/v1/config/asistente {"habilitado": true}`); until then knowledge routes answer `403 asistente_deshabilitado`. Each person also needs the **`PERM_CONOCIMIENTO`** permission (level 1 queries), granted per group in **/admin/grupos**. Docuboto does not call language models: `/search` and `/antecedentes` reuse document-service full-text search and, when the entity is on `ppi`, are delegated to the provider. There is no generation route.
+> **The knowledge layer is opt-in per entity (ADR-037).** New entities are born with it **off**: the entity administrator (`USUA_PERM_ADMIN` level 3) switches it on in **/admin/parametros** (or with `PUT /api/v1/config/asistente {"habilitado": true}`); until then knowledge routes answer `403 asistente_deshabilitado`. Each person also needs the **`PERM_CONOCIMIENTO`** permission (level 1 queries), granted per group in **/admin/grupos**. Docuboto does not call language models: `/search` and `/antecedentes` reuse the `document` package's full-text search and, when the entity is on `ppi`, are delegated to the provider. There is no generation route.
 
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/knowledge/search' \
+curl -X POST 'http://localhost:19000/api/v1/knowledge/search' \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query":"radicados pendientes","top_k":5}'
@@ -243,7 +271,7 @@ curl -X POST 'http://localhost:19080/api/v1/knowledge/search' \
 Unauthenticated intake (`POST /api/v1/public/{tenant}/ventanilla` and the legacy `/pqrs`) requires an **ALTCHA proof of work** on top of the honeypot and the rate limit: the browser solves, on its own and in a few seconds, a challenge the server hands out; the person solves nothing. From a script:
 
 ```bash
-RETO=$(curl -s http://localhost:19080/api/v1/public/demo/ventanilla/reto)
+RETO=$(curl -s http://localhost:19000/api/v1/public/demo/ventanilla/reto)
 ALTCHA=$(printf '%s' "$RETO" | python3 scripts/lib/altcha_solver.py)   # a challenge is good ONCE
 # `altcha` goes inside the JSON of the multipart `datos` part, next to sitio_web
 ```
@@ -268,7 +296,7 @@ curl -X POST "$API/api/v1/desclasificaciones/$REQUEST/aprobar" -H "Authorization
 
 If the approver is the requester, `409 separacion_de_funciones`; the request expires after 15 days. In the demo, `scripts/seed_demo.py` grants `PERM_RECLASIFICAR` level 4 to the management groups: with no profile at level 4 nobody could approve. When reserving or classifying you must pick a **cause from the closed catalogue** (`GET /api/v1/documents/causales-reserva`); a reserved one (art. 19) also carries a term of 1 to 180 months.
 
-The **public index of classified and reserved information by series** (art. 20 obligation) is read unauthenticated: `curl http://localhost:19080/api/v1/public/archive/indice-clasificados/demo` (or `….csv`). It carries no radicado numbers or counts.
+The **public index of classified and reserved information by series** (art. 20 obligation) is read unauthenticated: `curl http://localhost:19000/api/v1/public/archive/indice-clasificados/demo` (or `….csv`). It carries no radicado numbers or counts.
 
 ### Lend a physical-archive unit, set a legal retention and record a TVD appraisal (C-5)
 
@@ -294,10 +322,12 @@ If the browser already holds an active session, `/` **redirects automatically (3
 `/dashboard`**: an authenticated user never sees the landing page. To see it again, sign
 out from the user menu.
 
-From the landing page, "Iniciar sesión" leads to `/login`, which starts the OAuth2
-Authorization Code + PKCE flow against Keycloak (the code exchange and token custody
-happen **server-side**; the JWT lives in an `httpOnly` cookie and is never visible to
-the browser's JavaScript).
+From the landing page, "Iniciar sesión" leads to `/login`, the app's own username and
+password form: the SSR posts it to `POST /api/v1/auth/login` (ADR-048) and token custody
+happens **server-side**; the JWT lives in an `httpOnly` cookie and is never visible to
+the browser's JavaScript. The demo entity's people (`operador`, `jefe`, `secretaria`,
+`archivista`, `consulta`, `e2e1..3`) are created by `scripts/seed_demo.py` with the
+password `orpycamcp_dev`.
 
 ### 2. The personal dashboard (`/dashboard`)
 
@@ -316,9 +346,9 @@ activity) are still available, but in a secondary collapsible section, closed by
 default, and **only if the user holds the `SGD_PERM_ESTADISTICA` permission** — the same
 one that enables the `/reportes` view.
 
-### Suspended or not-ready institution
+### Not-ready institution
 
-If the institution is suspended, not yet provisioned, or its status could not be checked, the session shows a dedicated screen («La entidad está suspendida», «La entidad aún no está lista», «No se pudo comprobar el estado de la entidad») with **Reintentar** (when the status may change) and **Cerrar sesión**. On the public counter (`/radicacion`, `/eliminacion`) those same cases appear as «Esta entidad no tiene ventanilla disponible».
+If the institution isn't provisioned yet or its status couldn't be checked, the session shows a dedicated screen («La entidad está suspendida», «La entidad aún no está lista», «No se pudo comprobar el estado de la entidad») with **Reintentar** (when the status may change) and **Cerrar sesión**. On the public counter (`/radicacion`, `/eliminacion`) those same cases appear as «Esta entidad no tiene ventanilla disponible».
 
 ### 3. Global search from any screen
 
@@ -328,7 +358,7 @@ focus is already inside a text field, so it does not interfere with typing). On 
 screens the field unfolds from a magnifier icon.
 
 On submit, the search navigates to `/busqueda?q=<term>`, which is the same full-text
-search view (PostgreSQL FTS, `GET /api/v1/search` through the gateway) with its advanced
+search view (PostgreSQL FTS, `GET /api/v1/search` against the app) with its advanced
 filters. Because the term travels in the URL, any search is **linkable and shareable**,
 and the browser's back button behaves as expected.
 

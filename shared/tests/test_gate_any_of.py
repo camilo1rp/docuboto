@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
+
 from orpycamcp_common import rbac
 from orpycamcp_common.usuario import instalar_inyector
 

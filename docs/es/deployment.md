@@ -31,10 +31,9 @@ cifra de hardware de la documentación: cualquier otra es un error.
 
 Un guardián (`shared/tests/test_hardware_figure.py`) suma los `deploy.resources.limits`
 del perfil por defecto de `infra/docker-compose.prod.yml` y falla si exceden esta
-cifra. **Hoy la exceden** (13,5 CPU / 20,75 GB de límites: Keycloak y Redis siguen ahí, y eso sin contar
-el perfil `split`): la cifra es la meta del rediseño (ADR-047, ADR-048,
-ADR-049), y el guardián está marcado como fallo esperado estricto hasta que el
-manifiesto quepa. Cuando quepa, la marca se quita.
+cifra. **Hoy la exceden** (sin gateway ni worker desde ADR-047 ni Keycloak desde ADR-048, pero Redis y el almacén de objetos siguen ahí): la cifra es la meta del
+rediseño (ADR-049, ADR-050), y el guardián está marcado como fallo esperado
+estricto hasta que el manifiesto quepa. Cuando quepa, la marca se quita.
 
 ### Software
 
@@ -77,8 +76,8 @@ sudo chown $USER:$USER /srv/orpyca -R
 ### 2. Obtener certificados TLS
 
 El servicio `edge` (nginx en contenedor, §4) monta `/etc/letsencrypt` del servidor en solo lectura y
-necesita **un certificado por dominio**: `FRONTEND_HOSTNAME`, `API_PUBLIC_HOSTNAME` y
-`KEYCLOAK_HOSTNAME`. Con Let's Encrypt (gratuito, requiere el puerto 80 libre y los tres nombres
+necesita **un certificado por dominio**: `FRONTEND_HOSTNAME` y `API_PUBLIC_HOSTNAME`. Con Let's
+Encrypt (gratuito, requiere el puerto 80 libre y los dos nombres
 resolviendo al servidor), la **primera emisión** va con `--standalone` y **antes del primer `up`** (el
 puerto 80 aún no lo ocupa nadie):
 
@@ -86,7 +85,6 @@ puerto 80 aún no lo ocupa nadie):
 sudo apt install certbot
 sudo certbot certonly --standalone -d app.yourdomain.com
 sudo certbot certonly --standalone -d api.yourdomain.com
-sudo certbot certonly --standalone -d keycloak.yourdomain.com
 # Certificados en /etc/letsencrypt/live/<dominio>/{fullchain,privkey}.pem
 ```
 
@@ -132,29 +130,41 @@ sudo ufw enable
 La entrada la hace el servicio `edge` de `infra/docker-compose.prod.yml` (ADR-033): nginx en
 contenedor, **el único servicio con `ports:`** (`80:80`, `443:443`). No se instala nginx en el
 servidor. La plantilla es `infra/nginx/orpyca.conf.template`; la imagen oficial sustituye
-`${FRONTEND_HOSTNAME}`, `${API_PUBLIC_HOSTNAME}` y `${KEYCLOAK_HOSTNAME}` al arrancar, así que **no hay
-nada que copiar ni editar**: los tres dominios salen del mismo `infra/.env`.
+`${FRONTEND_HOSTNAME}` y `${API_PUBLIC_HOSTNAME}` al arrancar, así que **no hay
+nada que copiar ni editar**: los dos dominios salen del mismo `infra/.env`.
 
 Por qué en contenedor y no en el servidor:
 
-- Con nginx en el servidor, el gateway vería como par a la IP del docker-proxy
+- Con nginx en el servidor, la app vería como par a la IP del docker-proxy
   (ver `TRUSTED_PROXIES`, abajo).
-- Los servicios llaman a `https://${KEYCLOAK_HOSTNAME}` desde dentro de la red: `edge` lleva ese
-  nombre (y los otros dos) como **alias** en `orpycamcp-net`, así que el DNS de Docker lo resuelve al
-  propio `edge`, con certificado válido, sin *hairpin* NAT ni DNS externo. Eso es lo que hace funcionar
-  el login PKCE del SSR (`INTERNAL_KEYCLOAK_URL`).
+- `edge` lleva los dos nombres públicos como **alias** en `orpycamcp-net`: dentro de la red el DNS
+  de Docker los resuelve al propio `edge`, con certificado válido, sin *hairpin* NAT ni DNS externo.
 
 Qué publica cada dominio:
 
 | Dominio | Destino | Nota |
 |---|---|---|
 | `FRONTEND_HOSTNAME` | `frontend:3000` | HSTS; el resto de cabeceras las emite el SSR |
-| `API_PUBLIC_HOSTNAME` | `api-gateway:8080` | `/health/ready` solo desde el propio contenedor `edge` (`127.0.0.1`); sondeo: `docker exec <edge> wget --no-check-certificate -qO- --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready`. La IP del gateway de la red (`172.20.0.1`) **no** se admite: es la que ve nginx para cualquier cliente de internet |
-| `KEYCLOAK_HOSTNAME` | `keycloak:8080` | lista de **admisión**: solo `/realms/orpycamcp/` y `/resources/`; todo lo demás (incluidos `/admin/`, `/realms/master`, `/realms/master;x/…`) responde 404, y una ruta con `;` también |
+| `API_PUBLIC_HOSTNAME` | `app:8000` | `/metrics` responde 404; `/health/ready` solo desde el propio contenedor `edge` (`127.0.0.1`); sondeo: `docker exec <edge> wget --no-check-certificate -qO- --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready`. La IP del gateway de la red (`172.20.0.1`) **no** se admite: es la que ve nginx para cualquier cliente de internet |
 
-La consola de administración de Keycloak **no se publica**: úsela por túnel SSH
-(`ssh -L 8080:localhost:8080 servidor`, hacia el puerto del contenedor) o con
-`docker compose exec keycloak`.
+**Límite de tasa (ADR-047).** El cubo por IP vive en `edge` (`limit_req` de nginx, en memoria, sin
+Redis), con los presupuestos que tenía el api-gateway retirado:
+
+| Zona | Qué cubre | Límite por IP |
+|---|---|---|
+| `api_ip` | todo lo que entra | 1200/min (`20r/s`) |
+| `login_ip` | `/api/v1/auth/login`, `/refresh` y `/password`, `/oauth/token`, y el `/login` del SSR | 20/min |
+| `radicacion` | altas anónimas: `POST` a ventanilla/PQRS y al formulario público del SSR (`/radicacion`) | 5/min, solo `POST` |
+| `cosecha_ip` | OAI-PMH y CMIS públicos | 30/min |
+
+Al pasarse responde `429`. nginx no sabe quién es nadie y una oficina entera detrás de un NAT comparte
+IP, así que la **cuota por persona** la pone la app (`UserRateLimitMiddleware`,
+`RATE_LIMIT_PER_USER`, 120 peticiones por minuto por defecto; `429 rate_limit_exceeded` con
+`Retry-After: 60`). La ventana vive en memoria del proceso. Una petición sin persona no cuenta
+ahí: la cubre el cubo por IP.
+
+El emisor de identidad (ADR-048) sale por `API_PUBLIC_HOSTNAME`: `/.well-known/openid-configuration`,
+`/.well-known/jwks.json` y `/oauth/token`. Es lo que el proveedor PPI declara como emisor.
 
 ```bash
 cd infra
@@ -165,23 +175,22 @@ docker compose -f docker-compose.prod.yml --env-file .env exec edge nginx -t
 
 ### IP verificada de la ventanilla pública (`TRUSTED_PROXIES`)
 
-La constancia de autorización de la ventanilla (Ley 1581/2012, ADR-031) guarda la IP del cliente **solo si el gateway puede afirmarla**. El gateway la deriva recorriendo `X-Forwarded-For` **desde la derecha** y descartando los saltos de `TRUSTED_PROXIES`; la firma con `IDENTITY_SIGNING_SECRET` (ligada a la ruta, válida 120 s) y document-service solo acepta esa firma: **nunca** lee `X-Forwarded-For`. Para que `ip_verificada` sea `true` en producción:
+La constancia de autorización de la ventanilla (Ley 1581/2012, ADR-031) guarda la IP del cliente **solo si la app puede afirmarla**. `UsuarioActualMiddleware` la deriva una vez por petición recorriendo `X-Forwarded-For` **desde la derecha** y descartando los saltos de `TRUSTED_PROXIES`, y la deja en `request.state`; ningún dominio vuelve a leer `X-Forwarded-For`. Para que `ip_verificada` sea `true` en producción:
 
-1. `IDENTITY_SIGNING_SECRET` configurado (es obligatorio en producción; sin él la IP queda nula).
-2. `TRUSTED_PROXIES` del api-gateway debe incluir **la red del `edge` y la del frontend SSR** (los dos saltos que encadenan `X-Forwarded-For`: nginx usa `proxy_add_x_forwarded_for` y el SSR reenvía la IP del navegador). El valor por defecto del manifiesto es **`172.20.128.0/17`**: el `ip_range` de `orpycamcp-net` (la subred es `172.20.0.0/16`, pero los contenedores reciben IP solo de la mitad alta). Si falta alguna, el gateway ve como cliente al propio proxy: la constancia registra la IP del proxy, no la de la persona.
+1. `TRUSTED_PROXIES` de la app debe incluir **la red del `edge` y la del frontend SSR** (los dos saltos que encadenan `X-Forwarded-For`: nginx usa `proxy_add_x_forwarded_for` y el SSR reenvía la IP del navegador). El valor por defecto del manifiesto es **`172.20.128.0/17`**: el `ip_range` de `orpycamcp-net` (la subred es `172.20.0.0/16`, pero los contenedores reciben IP solo de la mitad alta). Si falta alguna, la app ve como cliente al propio proxy: la constancia registra la IP del proxy, no la de la persona.
 
-   **Por qué el gateway de la red (`172.20.0.1`) queda fuera.** nginx *añade* `$remote_addr` a lo que mande el cliente en `X-Forwarded-For`. Si `$remote_addr` llegara a ser `172.20.0.1` (un cliente IPv6 servido por el docker-proxy, o un proceso del propio servidor) y esa IP fuera de confianza, el gateway de la API la saltaría y se quedaría con la entrada **forjada por el cliente**, que acabaría sellada en `audit_log` y en la constancia (ADR-031). Con el gateway de la red fuera del rango de confianza el resultado es *fail-closed*: se registra `172.20.0.1`, nunca una IP inventada. Un guardián (`test_trusted_proxies_excluye_el_gateway_de_la_red`) impide volver a un `/16`. Si cambia la subred de la red en el compose, cambie `TRUSTED_PROXIES` a la par.
+   **Por qué el gateway de la red (`172.20.0.1`) queda fuera.** nginx *añade* `$remote_addr` a lo que mande el cliente en `X-Forwarded-For`. Si `$remote_addr` llegara a ser `172.20.0.1` (un cliente IPv6 servido por el docker-proxy, o un proceso del propio servidor) y esa IP fuera de confianza, la app la saltaría y se quedaría con la entrada **forjada por el cliente**, que acabaría sellada en `audit_log` y en la constancia (ADR-031). Con el gateway de la red fuera del rango de confianza el resultado es *fail-closed*: se registra `172.20.0.1`, nunca una IP inventada. Un guardián (`test_trusted_proxies_excluye_el_gateway_de_la_red`) impide volver a un `/16`. Si cambia la subred de la red en el compose, cambie `TRUSTED_PROXIES` a la par.
 
    **IPv6.** Docker entrega los clientes IPv6 por su docker-proxy, que oculta la IP real (se vería `172.20.0.1`). Para conservarla active `"ip6tables": true` en `/etc/docker/daemon.json`; sin eso, la IP de un cliente IPv6 queda como `172.20.0.1` (no informa, pero no se puede forjar).
-3. Con `TRUSTED_PROXIES` vacío (el valor por defecto) la cabecera se ignora y se usa la dirección del socket: es seguro, pero no informa.
+2. Con `TRUSTED_PROXIES` vacío (el valor por defecto) la cabecera se ignora y se usa la dirección del socket: es seguro, pero no informa.
 
 **Importante:** la IP solo es fiable si el frontend es alcanzable **únicamente a través de `edge`**. Un puerto del SSR expuesto directamente (en desarrollo, `19300` con `XFF_DEPTH=1`) acepta un `X-Forwarded-For` forjado por el cliente y lo encadena como si fuera de confianza; en producción ningún servicio salvo `edge` publica puertos (guardián del manifiesto).
 
 Si su `infra/.env` viene de una versión anterior y fija `TRUSTED_PROXIES=172.20.0.0/16`, **cámbielo** a `172.20.128.0/17` (o bórrelo): con el `/16` el gateway de la red vuelve a ser de confianza.
 
-**El gateway de la API se niega a arrancar si se lo deja así (ARC-B4).** El manifiesto de producción define `APP_ENV=production` y `GATEWAY_RED_DOCKER_GATEWAY=172.20.0.1` (debe coincidir con `gateway:` de la red; un guardián lo vigila); si `TRUSTED_PROXIES` cubre esa IP el arranque termina con un error que lo explica. Si la variable estuviera vacía, la IP se deriva de la ruta por defecto del contenedor. **Solo en producción:** en desarrollo `docker-compose.yml` fija `172.16.0.0/12` (que sí la contiene) a propósito y no se comprueba.
+**La app se niega a arrancar si se lo deja así (ARC-B4).** Lo comprueba su `lifespan` (antes lo hacía el api-gateway). El manifiesto de producción define `APP_ENV=production` y `GATEWAY_RED_DOCKER_GATEWAY=172.20.0.1` (debe coincidir con `gateway:` de la red; un guardián lo vigila); si `TRUSTED_PROXIES` cubre esa IP el arranque termina con un error que lo explica. Si la variable estuviera vacía, la IP se deriva de la ruta por defecto del contenedor. **Solo en producción:** en desarrollo `docker-compose.yml` fija `172.16.0.0/12` (que sí la contiene) a propósito y no se comprueba.
 
-Sin firma válida la constancia dice `ip=null, ip_verificada=false` y **no se bloquea** la radicación.
+Sin una IP útil la constancia dice `ip=null, ip_verificada=false` y **no se bloquea** la radicación.
 
 ### Política de tratamiento de datos de cada entidad
 
@@ -204,7 +213,7 @@ cp infra/.env.example .env
 openssl rand -base64 32  # PostgreSQL password
 openssl rand -base64 32  # Redis password
 openssl rand -base64 32  # clave del almacén de objetos
-openssl rand -base64 32  # Keycloak admin password
+openssl rand -base64 32  # IDENTITY_KEY_ENCRYPTION_KEY
 
 # 3. Editar .env con valores reales
 nano .env
@@ -218,19 +227,33 @@ nano .env
 | `DB_PASSWORD` | Contraseña PostgreSQL (32+ caracteres) | `<openssl rand -base64 32>` |
 | `REDIS_PASSWORD` | Contraseña Redis (32+ caracteres) | `<openssl rand -base64 32>` |
 | `MINIO_ROOT_PASSWORD` | Clave raíz del almacén de objetos (el prefijo `MINIO_` es histórico, ADR-027) | `<openssl rand -base64 32>` |
-| `KEYCLOAK_HOSTNAME` | Dominio FQDN de Keycloak | `keycloak.yourdomain.com` |
-| `KEYCLOAK_ADMIN_PASSWORD` | Contraseña admin Keycloak | `<secure password>` |
-| `KEYCLOAK_*_SECRET` | Secrets de clientes OAuth2 | `<32 char hex>` |
+| `IDENTITY_KEY_ENCRYPTION_KEY` | KEK (base64 de 32 bytes) que sella las claves privadas con que la app firma sus JWT (ADR-048). **La app no arranca sin ella**; perderla obliga a rotar la clave de firma y cierra todas las sesiones | `<openssl rand -base64 32>` |
 | `ORPYCA_REGISTRY` / `ORPYCA_VERSION` | Registro de imágenes y versión a desplegar (un tag `X.Y.Z`; nunca `latest`). **Obligatorias** (`:?`) en `docker-compose.prod.yml`; `release-<versión>.yml` ya no las usa porque fija cada imagen por digest | `ghcr.io/camilo1rp/docuboto` / `1.0.0` |
-| `FRONTEND_HOSTNAME` | FQDN público del frontend SSR (define `ORIGIN` y el `redirect_uri` del login) | `app.yourdomain.com` |
-| `API_PUBLIC_HOSTNAME` | FQDN público del api-gateway que ve el navegador | `api.yourdomain.com` |
+| `FRONTEND_HOSTNAME` | FQDN público del frontend SSR (define `ORIGIN`) | `app.yourdomain.com` |
+| `API_PUBLIC_HOSTNAME` | FQDN público de la API (la app, detrás de `edge`). `https://${API_PUBLIC_HOSTNAME}` es el `iss` de los JWT (`IDENTITY_ISSUER`) | `api.yourdomain.com` |
 | `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar. **El servicio no arranca sin ella** | `<openssl rand -base64 32>` |
-| `MINIO_ROOT_USER` | Usuario del almacén de objetos. **storage-service no arranca sin él** | `orpyca_prod` |
-| `WEBHOOK_SECRET_KEK` | KEK (base64 de 32 bytes) que cifra en reposo el secreto HMAC de los webhooks. **notification-service no arranca sin ella**; distinta de las demás KEK | `<openssl rand -base64 32>` |
-| `INTELLIGENCE_CREDENTIAL_KEK` | KEK (base64 de 32 bytes) que cifra el secreto del cliente de servicio de inteligencia. **`init_tenant.py` no da de alta una entidad sin ella**, con o sin el fragmento intelligence (ADR-053 §5) | `<openssl rand -base64 32>` |
-| `KNOWLEDGE_INTERNAL_TOKEN` | Token de ingesta interna (E21). Vacío ⇒ ingesta fail-closed | `<openssl rand -base64 32>` |
+| `MINIO_ROOT_USER` | Usuario del almacén de objetos. **La app no arranca sin él** | `orpyca_prod` |
+| `WEBHOOK_SECRET_KEK` | KEK (base64 de 32 bytes) que cifra en reposo el secreto HMAC de los webhooks. **La app no arranca sin ella**; distinta de las demás KEK | `<openssl rand -base64 32>` |
+| `INTELLIGENCE_CREDENTIAL_KEK` | KEK (base64 de 32 bytes) que sella la clave de seudónimo y la de retorno de inteligencia. **`init_tenant.py` no da de alta una entidad sin ella**, con o sin el fragmento intelligence (ADR-053 §5) | `<openssl rand -base64 32>` |
 | `SMTP_HOST` | Host SMTP | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | Contraseña o token de aplicación SMTP | `app-specific-password` |
+
+**No hay tokens internos que generar (ADR-047).** Las llamadas entre dominios son llamadas a
+función dentro de un proceso: ya no existen `X-Internal-Token`, los `*_INTERNAL_TOKEN`, los
+`*_SERVICE_URL`, `IDENTITY_SIGNING_SECRET`, `AUTH_CACHE_MAC_SECRET` ni
+`KEYCLOAK_API_GATEWAY_SECRET`; tampoco, desde ADR-048, `KEYCLOAK_HOSTNAME`,
+`KEYCLOAK_ADMIN_USER`, `KEYCLOAK_ADMIN_PASSWORD` ni `KEYCLOAK_AUTH_SERVICE_SECRET`. Si su `infra/.env` viene de una versión anterior, bórrelas: nadie
+las lee. Los nombres de las demás variables no cambian; la app las lee todas desde
+`docuboto/config.py`.
+
+### Variables de la app (opcionales)
+
+| Variable | Por defecto | Qué hace |
+|---|---|---|
+| `HEAVY_JOBS_CONCURRENCY` | `1` | Plazas para el trabajo pesado (veraPDF, migración de formato, renovación LTA, cola `worker` de `trabajo_fuera`). Comparten el mismo semáforo dentro del proceso; súbalo solo si la máquina tiene CPU de sobra |
+| `RATE_LIMIT_PER_USER` | `120` | Peticiones por persona y minuto (§4, límite de tasa) |
+| `FORMAT_MIGRATION_ENABLED` | `true` en los manifiestos | Bucle de migración de formatos obsoletos; corre en la app (antes en el contenedor `worker`) |
+| `TRUSTED_PROXIES` | `172.20.128.0/17` en prod | Saltos que pueden escribir `X-Forwarded-For` (ver arriba); lo lee la app |
 
 ### Variables que impiden el arranque si faltan
 
@@ -241,25 +264,25 @@ credenciales del almacén de objetos eran las de desarrollo que aparecen en el p
 y firmaba —o guardaba los anexos oficiales— con una clave que cualquiera puede
 leer en GitHub.
 
-Ahora el default es cadena vacía **y** el arranque lo comprueba: `signature-service`
-y `storage-service` se niegan a servir sin `SIGNATURE_SECRET`,
+Ahora el default es cadena vacía **y** el arranque lo comprueba: la app se niega a
+servir sin `SIGNATURE_SECRET`,
 `MINIO_ACCESS_KEY` y `MINIO_SECRET_KEY`. También se rechaza el valor de ejemplo
 (`change-me-in-production` y similares), por si alguien copia el `.env.example`
 sin tocarlo. El mensaje de error nombra la variable, nunca el valor recibido.
 
-**`ALTCHA_HMAC_KEY` (C16, ADR-038) es obligatoria**: clave (≥ 32 bytes; `openssl rand -hex 32`) con la que document-service firma los retos antirrobots de la ventanilla pública anónima. El manifiesto de producción la exige (`${ALTCHA_HMAC_KEY:?}`) y el servicio **no arranca** sin ella o con menos de 32 bytes. Nunca llega al navegador; rotarla solo invalida los retos vivos (≤ `ALTCHA_TTL_SEGUNDOS`, 300 por omisión). `ALTCHA_MAXNUMBER` (100000) acota el costo del cliente. Si Redis cae, la ventanilla responde `503 antirrobots_no_disponible` (fail-closed: sin Redis no se puede garantizar el uso único del reto).
+**`ALTCHA_HMAC_KEY` (C16, ADR-038) es obligatoria**: clave (≥ 32 bytes; `openssl rand -hex 32`) con la que la app firma los retos antirrobots de la ventanilla pública anónima. El manifiesto de producción la exige (`${ALTCHA_HMAC_KEY:?}`) y la app **no arranca** sin ella o con menos de 32 bytes. Nunca llega al navegador; rotarla solo invalida los retos vivos (≤ `ALTCHA_TTL_SEGUNDOS`, 300 por omisión). `ALTCHA_MAXNUMBER` (100000) acota el costo del cliente. Si Redis cae, la ventanilla responde `503 antirrobots_no_disponible` (fail-closed: sin Redis no se puede garantizar el uso único del reto).
 
 Si además se usa la ingesta de correo (E19), `EMAIL_ENCRYPTION_KEY` es
 obligatoria: con ella se cifran en reposo las credenciales de los buzones. Ya no
 hay variables `IMAP_*` — cada buzón se configura desde `/admin/correo` y vive en
 `email_cuenta`. Para el sondeo automático, `EMAIL_SONDEO_TENANT_SLUG` declara
 **a qué entidad pertenecen los buzones que sondea el proceso**; sin ella el
-worker no arranca aunque `EMAIL_SONDEO_ENABLED` esté activo.
+sondeo no arranca aunque `EMAIL_SONDEO_ENABLED` esté activo.
 
 ### CORS
 
 `CORS_ALLOW_ORIGINS` está **vacío por defecto y el middleware no se instala**. No
-es una regresión: el frontend habla con el gateway **desde el servidor** (SSR), no
+es una regresión: el frontend habla con la API **desde el servidor** (SSR), no
 desde el navegador, así que el despliegue típico no necesita CORS. Solo hay que
 declararlo para una integración de terceros o un SPA en otro dominio:
 
@@ -270,7 +293,7 @@ CORS_ALLOW_ORIGINS=https://sgd.entidad.gov.co,https://portal.entidad.gov.co
 > El comodín `*` se acepta pero **desactiva las credenciales**. La configuración
 > anterior era `allow_origins=["*"]` **junto con** `allow_credentials=True`, en
 > duro: con credenciales, Starlette no puede responder `*` y refleja el `Origin`
-> recibido — cualquier página de internet podía llamar al gateway con las
+> recibido — cualquier página de internet podía llamar a la API con las
 > credenciales del visitante.
 
 ### Particiones del registro de auditoría
@@ -287,7 +310,7 @@ ejecuta una vez. Prográmala mensualmente:
 ```bash
 # Crea (y endurece) las particiones de los próximos 3 meses. Idempotente.
 docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
-    -v "$PWD/scripts:/scripts:ro" auth-service \
+    -v "$PWD/scripts:/scripts:ro" app \
     python /scripts/audit_partitions.py --meses 3
 
 # Para la supervisión: 0 si están al día, 1 si falta la del mes siguiente.
@@ -297,11 +320,11 @@ docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
 Se adelanta varios meses a propósito: si el cron falla en silencio, hay margen
 antes de que los asientos vuelvan a caer en la partición por defecto.
 
-**El fallo del cron se ve sin leer ningún log.** `GET /health/ready` de auth-service
+**El fallo del cron se ve sin leer ningún log.** `GET /health/ready` de la app
 aplica la misma lógica de `--verificar` (¿existe la partición del mes siguiente?) en
 solo lectura y con el rol de la aplicación: si falta, responde **200** con
 `"degraded": ["audit_particiones"]` y `"audit_particiones": "degraded"` (es una alerta
-de operación, no saca el servicio del balanceador); si no puede consultar, `unknown`
+de operación, no saca la app del balanceador); si no puede consultar, `unknown`
 y no acusa. Alerta sobre ese campo en la supervisión que ya tengas.
 
 ### Verificación diaria de la cadena de auditoría
@@ -314,7 +337,7 @@ Prográmala **diaria**, con el módulo que usan también `backup.sh` y `restore.
 # ancla; con 1 si hay una rotura, un retroceso o un ancla ilegible. Solo LEE.
 docker compose -f infra/docker-compose.prod.yml run --rm --no-deps -T \
     -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
-    auth-service python -m app.ops.verify_audit_chains \
+    app python -m auth.ops.verify_audit_chains \
     --anclas - < /srv/orpyca/backups/anclas-auditoria.tsv
 ```
 
@@ -342,41 +365,46 @@ definas en producción**.
 > el archivo, y ordenar lo viejo no lo compensa. La función arranca en el primer mes
 > que no solape: el default se congela y deja de crecer.
 
-### Contrato de issuer (`iss`) — crítico
+### Identidad (ADR-048)
 
-El `iss` de los tokens es **siempre la URL pública** por la que el navegador hace
-login. Cualquier servicio que valide JWT (`auth-service`, `signature-service`) debe
-esperar exactamente ese `iss` o rechazará **todos** los tokens (fail-closed).
+La app emite la identidad: no hay proveedor externo que levantar.
 
-- **Producción (single-host):** Keycloak corre con `--hostname-strict=true
-  --hostname=${KEYCLOAK_HOSTNAME}`, por lo que navegador y servicios usan el mismo
-  host. `expected_issuer` se deriva de `KEYCLOAK_URL` y **no hace falta override**.
-- **Desarrollo (`docker-compose.yml`):** hay split (navegador `localhost:19180` ↔
-  red interna `keycloak:8080`); por eso allí se fija `KEYCLOAK_ISSUER` con la URL
-  pública del realm.
+- **Personas.** `POST /api/v1/auth/login` con usuario, contraseña (argon2id) y entidad; access JWT
+  ES256 de 15 min y un refresh opaco que rota en cada uso, con 30 min de inactividad y 12 h como
+  máximo. Presentar un refresh ya usado revoca la sesión entera. Política: 12 caracteres como
+  mínimo, sin repetir las últimas 5, bloqueo de 15 min tras 5 intentos fallidos (`PASSWORD_*`,
+  `LOGIN_*`).
+- **Emisor.** `IDENTITY_ISSUER` es el `iss` de todo token y la base del descubrimiento OIDC; el
+  manifiesto lo fija a `https://${API_PUBLIC_HOSTNAME}`. Las claves de firma viven en
+  `public.auth_jwt_keys`, selladas con `IDENTITY_KEY_ENCRYPTION_KEY`; la primera se crea sola.
+- **Rotar la clave de firma** sin cortar sesiones: `docker compose exec app python -m
+  auth.ops.rotate_jwt_key`. La anterior sigue publicada en la JWKS una hora (`JWT_KEY_OVERLAP_S`).
+- **Primer usuario de la entidad.** No hay alta en el primer login: el primero se crea fuera de
+  banda y queda ROOT:
 
-Al arrancar, `auth-service` y `signature-service` registran en el log el `iss`
-esperado y emiten un **WARNING fail-fast** si `KEYCLOAK_URL` apunta a un host
-interno de Docker sin `KEYCLOAK_ISSUER` definido (configuración que rechazaría todo
-token). Verifica este log tras el despliegue:
+  ```bash
+  docker compose exec -e GRANT_ROOT_PASSWORD='<clave>' app \
+    python -m auth.ops.grant_root --tenant <slug> --user <usuario> --create --email <correo>
+  ```
 
-```bash
-docker compose -f docker-compose.prod.yml logs auth-service | grep "issuer esperado"
-```
+  Los demás los crea un administrador (`POST /api/v1/auth/users` con `password`, o la pantalla de
+  usuarios), que también restablece contraseñas con `PUT /api/v1/auth/users/{id}/password`.
+- **Proveedor PPI.** Declara como emisor `https://${API_PUBLIC_HOSTNAME}`, con
+  `jwks_uri = https://${API_PUBLIC_HOSTNAME}/.well-known/jwks.json`, audiencia la suya y
+  `client_id = intelligence-<slug>`. La cuenta la crea `init_tenant.py`; no tiene secreto porque el
+  token lo firma el propio proceso.
 
 ### Frontend SSR
 
 El frontend (SvelteKit + adapter-node) corre en su **propio contenedor** detrás del
-proxy reverso. Necesita resolver correctamente el `origin` para construir el
-`redirect_uri` del login PKCE:
+proxy reverso. El formulario de `/login` envía a la acción del SSR, que llama a la app por la red
+interna; SvelteKit comprueba el origen del envío, así que necesita resolver bien el suyo:
 
 - `ORIGIN=https://${FRONTEND_HOSTNAME}` (o `PROTOCOL_HEADER=x-forwarded-proto` +
   `HOST_HEADER=x-forwarded-host` si el proxy los inyecta).
-- URLs **públicas** (navegador): `PUBLIC_API_URL`, `PUBLIC_KEYCLOAK_URL`.
-- URLs **internas** (SSR → red Docker): `INTERNAL_API_URL`, `INTERNAL_KEYCLOAK_URL`.
-
-El `redirect_uri` resultante (`https://${FRONTEND_HOSTNAME}/login/callback`) debe
-estar en `redirectUris`/`webOrigins` del cliente `orpycamcp-frontend` en Keycloak.
+- URL **pública** (navegador): `PUBLIC_API_URL`.
+- URL **interna** (SSR → red Docker): `INTERNAL_API_URL`.
+- `PORTAL_TENANT_SLUG`: la entidad de la instalación. Con ella el login no pide la entidad.
 
 ### Rotación de secretos
 
@@ -391,14 +419,14 @@ docker compose exec postgres psql -U orpycamcp -c "ALTER USER orpycamcp PASSWORD
 
 # 3. Actualizar .env y reiniciar servicios
 sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$NEW_PASSWORD/" .env
-docker compose restart document-service tenant-service auth-service
+docker compose restart app
 ```
 
 ### KEK de los secretos de webhooks (rotación)
 
-El secreto HMAC con el que notification-service firma cada entrega de webhook se guarda
+El secreto HMAC con el que la app firma cada entrega de webhook se guarda
 **cifrado** (AES-256-GCM; AAD `tenant:{slug}:webhook:{id}:secret`) con `WEBHOOK_SECRET_KEK`, que
-vive en el entorno del servicio y **nunca en la base**. Es el mismo esquema que la custodia de la
+vive en el entorno de la app y **nunca en la base**. Es el mismo esquema que la custodia de la
 firma personal (`orpycamcp_common.kek`). Respáldala con la misma disciplina que el resto de KEK:
 **si se pierde, los secretos son irrecuperables** y cada webhook con secreto hay que volver a
 darlo de alta. Mientras una fila siga en claro o no descifre, **no se entrega** (fail-closed).
@@ -406,17 +434,17 @@ darlo de alta. Mientras una fila siga en claro o no descifre, **no se entrega** 
 Rotación sin pérdida (conviven v1 y v2 durante la transición):
 
 ```bash
-# 1. Añadir la KEK nueva al llavero y activarla; reiniciar notification-service.
+# 1. Añadir la KEK nueva al llavero y activarla; reiniciar app.
 #    WEBHOOK_SECRET_KEKS='{"2":"<openssl rand -base64 32>"}'
 #    WEBHOOK_SECRET_KEK_ACTIVE_VERSION=2
 # 2. Re-envolver todos los secretos a la KEK activa (todos los tenants).
 docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
-  notification-service python -m app.ops.rewrap_webhook_secrets --dry-run
+  app python -m notification.ops.rewrap_webhook_secrets --dry-run
 docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
-  notification-service python -m app.ops.rewrap_webhook_secrets
+  app python -m notification.ops.rewrap_webhook_secrets
 # 3. Verificar: una versión con conteo 0 es retirable (retirarla es manual).
 docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
-  notification-service python -m app.ops.rewrap_webhook_secrets --verify
+  app python -m notification.ops.rewrap_webhook_secrets --verify
 ```
 
 Cada fila se re-cifra con nonce nuevo y round-trip antes de persistir y deja el asiento
@@ -426,6 +454,29 @@ reanudable: si falla a medias, volver a ejecutarlo recoge el remanente.
 ---
 
 ## Despliegue con Docker Compose
+
+### Qué contenedores corren (ADR-047)
+
+Docuboto es **un proceso**: el contenedor `app` (imagen `infra/Dockerfile.app`) sirve toda la API,
+con los nueve paquetes de dominio en el mismo `FastAPI`, y corre en el mismo proceso los consumidores
+de eventos y los bucles de fondo (migración de formato, renovación LTA, colas de `trabajo_fuera`). La
+imagen lleva JRE, veraPDF y Ghostscript para la validación PDF/A. Ya no hay `api-gateway`, ni
+contenedor `worker` (`infra/Dockerfile.worker` se retiró), ni perfil `split`, ni pila E2E.
+
+| Contenedor | Producción (`infra/docker-compose.prod.yml`) | Desarrollo (`docker-compose.yml`) |
+|---|---|---|
+| `migrate-docuboto` | sí, de un solo uso (imagen `app`) | sí, de un solo uso |
+| `postgres` | sí | sí (`127.0.0.1:15432`) |
+| `redis` | sí | sí (`127.0.0.1:16379`) |
+| `minio` (RustFS) | sí | sí (`19900`) |
+| `app` | sí | sí (`127.0.0.1:19000`) |
+| `frontend` | sí | sí (`19300`) |
+| `edge` (nginx) | sí, el único con `ports:` | no |
+| `mailpit` | no | opcional (perfil propio) |
+
+**La meta de ADR-047 —cuatro contenedores: `app`, `postgres`, `edge`, `frontend`— todavía no se
+cumple.** Keycloak ya salió (ADR-048); Redis y el almacén de objetos siguen en el manifiesto hasta
+que los retiren ADR-049 (eventos en PostgreSQL) y ADR-050 (bytes en disco).
 
 ### Usando docker-compose.prod.yml
 
@@ -447,14 +498,31 @@ docker compose -f docker-compose.prod.yml up -d
 
 # 5. Verificar estado
 docker compose ps
-docker compose logs -f api-gateway
+docker compose logs -f app
 
-# 6. Crear primer tenant (después de que Keycloak esté listo)
+# 6. Crear la entidad y su primer usuario (ver «Identidad»)
 #    El script corre DESDE EL HOST, no dentro de un contenedor, y toma los tres
 #    argumentos por posición: <slug> <nombre> <código>.
 cd ..
 COMPOSE_FILE=infra/docker-compose.prod.yml ENV_FILE=infra/.env \
   ./scripts/init-tenant.sh mi-institucion "Mi Institución" MIST
+docker compose -f infra/docker-compose.prod.yml exec -e GRANT_ROOT_PASSWORD='<clave>' app \
+  python -m auth.ops.grant_root --tenant mi-institucion --user admin --create
+```
+
+**Una instalación, una entidad (ADR-047 §3).** `public.tenants` es la fila de configuración de la
+entidad de la instalación: no tiene estados de ciclo de vida (`status`, `provisioning_status`), no
+hay registro de entidades por HTTP ni veto de entidad suspendida. Se conserva el esquema
+`tenant_{slug}`. Un pendiente declarado: los buckets siguen nombrándose por entidad
+(`orpycamcp-<slug>-documents`; lo retira ADR-050). La cuenta de servicio de inteligencia la crea
+`init_tenant.py` en `public.auth_service_accounts` (ADR-048).
+
+**Certificado de firma personal.** Tras emitir offline el certificado de una persona con
+`scripts/gen-user-cert.sh`, cárguelo dentro del contenedor (ya no hay ruta interna HTTP):
+
+```bash
+docker compose exec -T app python -m auth.ops.activar_certificado \
+  --tenant <slug> --user-id <uuid> --cert - < user.crt
 ```
 
 ### Verificación post-despliegue
@@ -462,11 +530,10 @@ COMPOSE_FILE=infra/docker-compose.prod.yml ENV_FILE=infra/.env \
 ```bash
 # Revisar logs de cada servicio
 docker compose logs -f postgres      # Errores de conexión
-docker compose logs -f keycloak      # OIDC/realm issues
-docker compose logs -f api-gateway   # Errores de ruteo
+docker compose logs -f app           # Errores de la aplicación
 
 # Probar health check (a través de Nginx si está configurado)
-curl -k https://keycloak.yourdomain.com/health
+curl -k https://api.yourdomain.com/.well-known/openid-configuration
 
 # Verificar que el almacén de objetos está funcionando
 #
@@ -480,41 +547,38 @@ docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
 
 #### Las dos sondas: `/health` y `/health/ready`
 
-Cada servicio expone **dos** rutas, y no son intercambiables:
+La app expone **dos** rutas, y no son intercambiables:
 
 | Ruta | Pregunta | Comprueba | Quién la consulta |
 |---|---|---|---|
 | `/health` | ¿Responde el proceso? | Nada | El `healthcheck` del contenedor |
-| `/health/ready` | ¿Puede atender tráfico **ahora**? | Base de datos, Redis, SMTP, consumidor de eventos | El balanceador / proxy reverso |
+| `/health/ready` | ¿Puede atender tráfico **ahora**? | Decide con base de datos y Redis; informa sin decidir almacén, SMTP, partición de `audit_log` del mes siguiente y cada consumidor de eventos con su DLQ | El balanceador / proxy reverso |
 
-`/health` **no depende de nada a propósito**. Reiniciar un servicio porque
+`/health` **no depende de nada a propósito**. Reiniciar la app porque
 Postgres está caído no arregla Postgres: tira el trabajo en vuelo y suma una
 tormenta de reinicios a un incidente en curso. `/health/ready` devuelve **503**
-cuando el servicio no puede trabajar, que es la señal para que el balanceador
-deje de mandarle peticiones **sin reiniciarlo**.
+cuando la app no puede trabajar, que es la señal para que el balanceador
+deje de mandarle peticiones **sin reiniciarla**.
 
-Configure el proxy reverso para sacar del reparto a un servicio cuyo
+Configure el proxy reverso para sacar del reparto a la app cuando
 `/health/ready` responda 503; deje los reinicios a `/health`.
 
 ```bash
-# Diagnóstico agregado del sistema (gateway + sus diez servicios)
-curl -s https://sudominio.gov.co/health/ready | jq
-
-# Estado del consumidor de eventos de un servicio concreto
-docker compose exec workflow-service \
-  python -c "import urllib.request,json; print(json.load(urllib.request.urlopen('http://localhost:8006/health/ready')))"
+# Diagnóstico agregado (solo desde el propio contenedor edge, ver §4)
+docker compose exec edge wget --no-check-certificate -qO- \
+  --header "Host: $API_PUBLIC_HOSTNAME" https://127.0.0.1/health/ready
 ```
 
-En `checks.consumer`, el valor `reiniciando` significa que el consumidor de
-eventos murió y está reintentando: el servicio atiende peticiones, pero lo que
-ese consumidor hace —repartir la correspondencia, enviar correos, sellar firmas,
-alimentar el buscador— **no está ocurriendo**. Es motivo de revisión aunque el
-servicio figure disponible.
+En `consumers`, el valor `reiniciando` de un consumidor significa que murió y
+está reintentando: la app atiende peticiones, pero lo que ese consumidor hace
+—repartir la correspondencia, enviar correos, sellar firmas, alimentar el
+buscador— **no está ocurriendo**. Es motivo de revisión aunque la app figure
+disponible.
 
 Las sondas informan el estado con una palabra (`ok`, `error`, `unreachable`) y
 nunca el detalle del fallo: son alcanzables sin autenticar y el texto de una
 excepción de red incluye nombres y puertos internos. El motivo real está en el
-log del servicio.
+log de la app.
 
 ---
 
@@ -533,14 +597,18 @@ docker swarm join --token <TOKEN> manager-node-ip
 docker stack deploy -c docker-compose.prod.yml orpyca-mcp
 ```
 
-### Identidad de un solo uso (Redis obligatorio) y `search_path` (ADR-044)
+### Identidad y `search_path` (ADR-044, ADR-047)
 
-La identidad que el gateway firma para cada servicio es de **un solo uso**: lleva un nonce de 128 bits (`X-Identity-Nonce`, formato de firma **v3**) que el servicio de destino reclama en Redis (`SET NX EX`, clave `orpycamcp:identidad:nonce:v3:{tenant}:{nonce}`, vida ≤ 180 s). Consecuencias de operación:
+La identidad se resuelve **una vez por petición**: `UsuarioActualMiddleware` valida el JWT, deja la
+persona en `request.state` y borra las cabeceras de identidad que mande el cliente (`X-User-Id`,
+`X-Username`, `X-User-Roles`, `X-Canal`, `X-Tenant-Slug`; esta última la repone con el slug del
+token). Sin saltos de red entre dominios no hay cabecera que firmar: la identidad firmada con nonce
+(`IDENTITY_SIGNING_SECRET`, `X-Identity-Nonce`) se retiró con ADR-047, y con ella la dependencia dura
+de Redis para cada petición autenticada.
 
-- **Redis es dependencia dura de toda petición con identidad de persona.** Con Redis caído esas peticiones responden `503 identidad_no_verificable` (`Retry-After: 1`); la ventanilla pública, `/health`, los webhooks públicos y las llamadas internas sin `X-User-Id` siguen vivas. **`storage-service` ahora también necesita `REDIS_URL`** (y `depends_on: redis`); los diez componentes con `IDENTITY_SIGNING_SECRET` lo necesitan. Un servicio con el secreto y sin `REDIS_URL` **no arranca** (`lifespan.startup.failed`). No configure `maxmemory-policy allkeys-*` en ese Redis: podría desalojar un nonce y reabrir la reproducción (el valor por defecto, `noeviction`, es el correcto). En producción conserve `--appendonly yes`; sin él, un reinicio de Redis olvida hasta 180 s de nonces.
-- **Corte atómico.** Pasar de v2 a v3 cambia la base del HMAC y no hay rama de compatibilidad: reconstruya y arranque **a la vez** el gateway y los nueve servicios (`docker compose up -d --build api-gateway auth-service tenant-service document-service archive-service storage-service workflow-service notification-service signature-service knowledge-service`). Si conviven versiones, toda petición autenticada responde 401.
-- **`search_path` = solo el tenant.** Este cambio **no** requiere corte atómico: aplique las migraciones (`migrate-docuboto`) y luego reconstruya los servicios. Las extensiones `pg_trgm`, `unaccent`, `pgcrypto` y `vector` **deben vivir en `public`**; las migraciones globales `document/005` y `knowledge/002` abortan con un mensaje claro si no es así. La migración `tenant-service/global/005` retira las 14 tablas de tenant que habían caído en `public`.
-- Verificación en la pila: un GET autenticado por el gateway responde 200; la misma petición reproducida directo al servicio con las cabeceras capturadas, 401; con `docker compose stop redis`, el GET autenticado responde 503 y `/health` y una ruta pública, 200.
+El `search_path` de cada conexión de tenant es **solo** el esquema `tenant_{slug}`. Las extensiones
+(`pg_trgm`, `unaccent`) **deben vivir en `public`**; las crea
+`migrations/global/010_extensions.sql`.
 
 ### Opción 2: Kubernetes (no soportado todavía)
 
@@ -548,19 +616,19 @@ La identidad que el gateway firma para cada servicio es de **un solo uso**: llev
 `kustomization`), y la conversión automática desde Compose no se ha probado: `migrate-docuboto`,
 las dependencias `service_completed_successfully` y los secretos por archivo no se traducen solos.
 La vía soportada es Docker Compose (Opción 1) o Swarm. Si escala réplicas en cualquier orquestador,
-**revise antes el estado en memoria**: el limitador del api-gateway cuenta en Redis, pero los
-el consumo por `jti` de las propuestas del MCP y otros cachés son por proceso.
+**revise antes el estado en memoria**: la cuota por persona (`RATE_LIMIT_PER_USER`), el semáforo
+de trabajo pesado (`HEAVY_JOBS_CONCURRENCY`) y otros cachés son por proceso, y los bucles de fondo
+corren en cada réplica de `app`.
 
-### Escalabilidad de servicios
+### Escalabilidad
 
-Este manifiesto corre **una réplica** de cada servicio. Con un tenant y unos 10
-usuarios concurrentes, una instancia cubre la carga. `deploy.replicas` queda en
-`1` en `api-gateway`, `document-service`, `storage-service` y `frontend`; el resto
-ya era una instancia. Los nueve servicios con base de datos abren
-`DB_POOL_MAX_SIZE=3`. Keycloak tiene un tope de 1 GB.
+Este manifiesto corre **una réplica** de `app` y de `frontend`. Con una entidad y unos 10–15
+usuarios concurrentes, un proceso cubre la carga. La app abre **un pool** de
+`DB_POOL_MAX_SIZE=10` conexiones, y es la única: la identidad la emite la propia app (ADR-048).
+Queda margen para migraciones, respaldos y `psql`.
 
-Subir réplicas en este diseño (procesos separados, identidad firmada, pools por
-servicio) vuelve a inflar el presupuesto de conexiones y no entra en Docuboto 2.0.
+Con un proceso no se puede replicar solo el dominio que va lento (ADR-047); al volumen del cliente
+objetivo no hace falta.
 
 ---
 
@@ -583,7 +651,7 @@ servicio) vuelve a inflar el presupuesto de conexiones y no entra en Docuboto 2.
 ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
 ```
 
-Vuelca PostgreSQL (todos los schemas: `public` con el registro de tenants y el
+Vuelca PostgreSQL (todos los schemas: `public` con la fila de la entidad y el
 `audit_log`, más un `tenant_*` por institución) y espeja el almacén. Tres garantías que
 conviene conocer porque cambian cómo se opera:
 
@@ -651,7 +719,7 @@ RESTORE_OPERADOR="Nombre Apellido" ENV_FILE=infra/.env ./infra/restore.sh /srv/o
 
 `RESTORE_OPERADOR` es **obligatorio** (la persona que ejecuta la restauración; el script termina antes de confirmar o parar nada si falta): el acta `storage.restauracion` de `audit_log` se atribuye a `operador:<nombre>` y declara, por tenant, la **ventana de traza perdida** —el extremo de `audit_log` (conteo, id y hash del último asiento) se anota *antes* de `pg_restore` y se compara con el restaurado—. Restaurar un respaldo anterior al estado vivo suprime legalmente los asientos posteriores; el acta dice cuáles `(desde_id, hasta_id]` y cuántos.
 
-Para las aplicaciones y Keycloak pero **deja en pie Postgres y el almacén**, que son el
+Para las aplicaciones pero **deja en pie Postgres y el almacén**, que son el
 destino del trabajo. Exige confirmación escrita: restaurar destruye el estado
 actual y es irreversible.
 
@@ -672,7 +740,7 @@ la restauración **falla** —esa evidencia se perdería— salvo que el respons
 con `RESTORE_ACEPTAR_PERDIDA_VERSIONES=1` (y la anote en el acta). Como tras restaurar el
 `version_id` de `preservacion_worm_objeto` ya no corresponde a ningún objeto, el script
 escribe `mapa-version-id-<fecha>.tsv` junto a los respaldos y **registra el acto**:
-`app.ops.registrar_restauracion` actualiza `preservacion_worm_objeto.version_id` desde el
+`auth.ops.registrar_restauracion` actualiza `preservacion_worm_objeto.version_id` desde el
 mapa y deja el asiento `storage.restauracion` (hash del mapa, recuentos y previas no
 restauradas) en `audit_log`, en una sola transacción. Si ese paso falla, el script termina
 con error: registra el acta a mano con el mapa antes de dar el sistema por bueno.
@@ -705,7 +773,7 @@ parar servicios y de `pg_restore`** (pre-vuelo) crea o comprueba cada bucket pro
 puede habilitar a posteriori), **aborta sin haber parado ni restaurado nada**: «no se ha tocado ningún
 dato» es cierto. `backup.sh` ya
 no se traga un fallo al listar los buckets: exige que el espejo contenga
-`orpycamcp-<slug>-documents` de cada tenant que no esté dado de baja (`active` y `suspended`); con el almacén sin responder o la red
+`orpycamcp-<slug>-documents` de cada entidad registrada en `public.tenants`; con el almacén sin responder o la red
 equivocada el respaldo **falla** en vez de salir «correcto» con el espejo vacío. Ambos scripts toman
 la red del servicio `minio` y usan `amazon/aws-cli` por tag y digest (`S3_CLI_IMAGEN` lo sobrescribe).
 
@@ -806,17 +874,17 @@ seguro. Para verlas correr a mano **antes** de arrancar:
 
 **Desarrollo.** `docker-compose.yml` hace lo mismo: `docker compose up -d --build` construye las imágenes, corre
 `migrate-docuboto` y solo entonces arranca cada servicio. El migrador reutiliza la imagen `orpycamcp/app:dev`
-(`pull_policy: never`, sin `build:` propio). Para recrear **un** servicio con una imagen nueva (la forma con
+(`pull_policy: never`, sin `build:` propio). Para recrear la app con una imagen nueva (la forma con
 `--no-deps` salta el migrador a propósito):
 
 ```bash
-docker compose build app <svc>-service \
+docker compose build app \
   && docker compose run --rm --no-deps migrate-docuboto \
-  && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose up -d --no-build --no-deps <svc>-service
+  && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose up -d --no-build --no-deps app
 ```
 
-Si el migrador falla, el `&&` no recrea el servicio. Recrear con la **misma** imagen
-(`up -d --no-build --no-deps <svc>-service`) no necesita migrar: el migrador ya la aplicó.
+Si el migrador falla, el `&&` no recrea la app. Recrear con la **misma** imagen
+(`up -d --no-build --no-deps app`) no necesita migrar: el migrador ya la aplicó.
 
 ### Despliegue
 
@@ -924,30 +992,29 @@ kibana:
 
 ### Métricas con Prometheus
 
-Cinco servicios exponen `GET /metrics` (formato de texto 0.0.4) en su **puerto propio**: `auth-service:8001`,
-`archive-service:8004`, `workflow-service:8006`, `notification-service:8007` y
-`signature-service:8008`. No lo exponen gateway, tenant, document, storage, knowledge ni mcp. El exportador es propio
+La app expone **un** `GET /metrics` (formato de texto 0.0.4) en su puerto interno, `app:8000`
+(ADR-047: antes eran cinco, uno por servicio). El exportador es propio
 (`orpycamcp_common.metricas`, ADR-041): sin `prometheus_client`, **sin etiqueta de tenant ni de identidad** y con
 medición perezosa (caché de `METRICS_TTL_SECONDS`, 30 s por defecto, plazo de 10 s).
 
-| Familia | Servicio | Significado |
+| Familia | Señal | Significado |
 |---|---|---|
-| `orpycamcp_signal_measured{signal}` | los cinco | `1` = la última medición fue completa en todos los tenants; `0` = **no verificado** |
-| `orpycamcp_signal_last_success_timestamp_seconds{signal}` | los cinco | epoch de la última medición completa |
-| `orpycamcp_dlq_pending_events` | workflow, signature, notification | eventos pendientes en la dead-letter del grupo propio |
+| `orpycamcp_signal_measured{signal}` | todas | `1` = la última medición fue completa en todos los tenants; `0` = **no verificado** |
+| `orpycamcp_signal_last_success_timestamp_seconds{signal}` | todas | epoch de la última medición completa |
+| `orpycamcp_dlq_pending_events` | `dlq` | eventos pendientes en las dead-letter de workflow, signature y notification |
 | `orpycamcp_dlq_oldest_pending_timestamp_seconds` | idem | el pendiente más antiguo (ausente si no hay) |
-| `orpycamcp_worm_exhausted_artifacts{artifact,phase}` | archive | artefactos WORM con el reintento agotado |
-| `orpycamcp_audit_chain_breaks`, `_declared_breaks`, `_verification_ok`, `_last_verification_timestamp_seconds` | auth | última corrida **completa** de `verify_audit_chains` |
+| `orpycamcp_worm_exhausted_artifacts{artifact,phase}` | `worm` | artefactos WORM con el reintento agotado |
+| `orpycamcp_audit_chain_breaks`, `_declared_breaks`, `_verification_ok`, `_last_verification_timestamp_seconds` | `audit_chain` | última corrida **completa** de `verify_audit_chains` |
+| `orpycamcp_intelligence_sends`, `_barrier_denials`, `_fallbacks`, `_suspensions` | `intelligence` | envíos y negativas de la pasarela de inteligencia |
 
 **«No verificado» no es 0.** Si la medición de una señal falla en cualquier tenant, se emite
 `orpycamcp_signal_measured{signal="…"} 0` y **no se emite ninguna serie de valor** de esa señal; nunca una suma
 parcial. Un `orpycamcp_dlq_pending_events 0` con `signal_measured 1` sí es un cero medido. Con réplicas, cada una
 reporta el mismo estado de la base: agregar con `max()`, no con `sum()`.
 
-**Cómo se protege.** `/metrics` no lo enruta el gateway (solo reenvía `/api/v1/`), el servicio responde **404** a toda
-petición con `X-Forwarded-For`, `Forwarded` o `X-Real-IP` (Prometheus no las manda; nginx y el gateway sí) y el nginx
-de producción responde 404 a `/metrics` en el host de la API. En producción los servicios no publican `ports:`: Prometheus
-debe unirse a `orpycamcp-net` y raspar por el nombre DNS del servicio. **Prometheus no forma parte del manifiesto
+**Cómo se protege.** La app responde **404** a toda petición a `/metrics` con `X-Forwarded-For`, `Forwarded` o
+`X-Real-IP` (Prometheus no las manda; nginx sí) y el nginx de producción responde 404 a `/metrics` en el host de la
+API. En producción la app no publica `ports:`: Prometheus debe unirse a `orpycamcp-net` y raspar `app:8000`. **Prometheus no forma parte del manifiesto
 de esta versión**; si lo despliega, fije su imagen por tag **y digest** (`docker buildx imagetools inspect
 <imagen>:<tag>`; nada de `:latest`) y no publique `ports:` de Prometheus ni de Grafana: acceda por un túnel o
 un proxy interno autenticado, no abriendo el puerto al exterior.
@@ -960,15 +1027,11 @@ scrape_configs:
     scrape_interval: 60s
     static_configs:
       - targets:
-          - auth-service:8001
-          - archive-service:8004
-          - workflow-service:8006
-          - notification-service:8007
-          - signature-service:8008
+          - app:8000
 ```
 
 **La cadena de auditoría la mide el último job, no el scrape.** `orpycamcp_audit_chain_*` sale de
-`public.audit_chain_runs`, donde `python -m app.ops.verify_audit_chains` anota una fila por corrida (lo invocan
+`public.audit_chain_runs`, donde `python -m auth.ops.verify_audit_chains` anota una fila por corrida (lo invocan
 `backup.sh` con `--origen backup` y `restore.sh` con `--origen restore`). Una corrida acotada con `--slug` o
 `--excluir-prefijo` se anota **parcial** y no cuenta. Para que haya señal aunque no haya respaldo, programe un cron
 diario (desde el anfitrión, sin montar el repo en escritura):
@@ -976,7 +1039,7 @@ diario (desde el anfitrión, sin montar el repo en escritura):
 ```bash
 # /etc/cron.d/orpyca-verificar-auditoria
 30 3 * * * orpyca cd /srv/orpyca && docker compose -f infra/docker-compose.prod.yml run --rm --no-deps -T \
-  auth-service python -m app.ops.verify_audit_chains --anclas - --origen cron < /srv/orpyca/backups/anclas-auditoria.tsv
+  app python -m auth.ops.verify_audit_chains --anclas - --origen cron < /srv/orpyca/backups/anclas-auditoria.tsv
 ```
 
 (Sin `--emitir-ancla`: el cron solo verifica y anota; anclar sigue siendo cosa de `backup.sh`.)
@@ -1026,11 +1089,10 @@ Configurar alertas para:
 > `ports:` salvo `edge` (80 y 443), Redis lleva `--requirepass ${REDIS_PASSWORD:?}`, toda credencial es obligatoria
 > (`${VAR:?}`) y sin valor por defecto, y las imágenes de terceros llevan **tag y digest** (`@sha256:`; un
 > tag se puede mover en el registro, el digest no). `TRUSTED_PROXIES` no incluye el gateway de la red, la
-> plantilla de nginx cubre los tres dominios y `infra/.env.example` contiene toda variable del manifiesto.
+> plantilla de nginx cubre los dos dominios y `infra/.env.example` contiene toda variable del manifiesto.
 > Para actualizar una imagen: `docker buildx imagetools inspect <imagen>:<tag>`, copiar el `Digest` al
 > manifiesto (y a `docker-compose.yml`, para que lo validado en desarrollo sea lo que va a producción) y
-> correr el guardián. **Keycloak 24.0.5 está fuera de soporte**: actualizarlo es una tanda aparte (cambia la
-> API de administración y el tema).
+> correr el guardián.
 > Lo que depende del **host** se comprueba, desde fuera del servidor, con
 > `scripts/preflight-prod.sh <host-publico>` (TLS válido, HTTP redirige a HTTPS, puertos
 > internos cerrados). Lo demás sigue siendo manual.
@@ -1039,20 +1101,20 @@ Configurar alertas para:
 - [ ] PostgreSQL no es accesible externamente (manifiesto: guardián; host: `preflight-prod.sh`)
 - [ ] El almacén de objetos requiere autenticación (sin acceso público)
 - [ ] Redis requiere contraseña (manifiesto: guardián)
-- [ ] Keycloak usa HTTPS con certificado válido (los tres dominios tienen certificado y `edge` los sirve; la consola `/admin/` no es pública)
+- [ ] Los dos dominios tienen certificado válido y `edge` los sirve; `IDENTITY_KEY_ENCRYPTION_KEY` es propia de la instalación
 - [ ] Solo `edge` publica puertos (80 y 443): Docker se salta ufw en los puertos publicados (manifiesto: guardián; host: `scripts/preflight-prod.sh`)
 - [ ] `TRUSTED_PROXIES` sin el gateway de la red (`172.20.128.0/17`, no el `/16`)
 - [ ] CORS configurado restringidamente
-- [ ] Audit logging habilitado en PostgreSQL y Keycloak
+- [ ] Audit logging habilitado en PostgreSQL
 - [ ] Backup diario con pruebas de recuperación
-- [ ] Rate limiting en api-gateway activado
+- [ ] Límite de tasa por IP en `edge` (`limit_req`) y `RATE_LIMIT_PER_USER` en la app
 - [ ] Headers de seguridad (HSTS, X-Content-Type-Options, etc.)
 
 ### Cabeceras de seguridad en Nginx
 
 Están en `infra/nginx/orpyca.conf.template` (servicio `edge`). Lo importante de esa plantilla no son las
 cabeceras: son las tres cosas que dependen de `X-Forwarded-*` y fallan en silencio sin ellas — el
-`redirect_uri` del login PKCE, la IP real que se sella en `audit_log` (registro con
+origen que SvelteKit comprueba en el formulario de login, la IP real que se sella en `audit_log` (registro con
 valor probatorio) y el reparto del límite por IP. Lleva también `proxy_buffering off`,
 sin el cual nginx vuelve a acumular en disco cada descarga que el sistema sirve por
 trozos (anexos, ZIP de expediente, AIP).
@@ -1093,7 +1155,7 @@ un fallo, y una vulnerabilidad con corrección disponible también.
 ```bash
 # 1. Verificar logs
 docker compose logs postgres
-docker compose logs keycloak
+docker compose logs app
 
 # 2. Comprobar variables de entorno
 docker compose config | grep -A 5 "environment"

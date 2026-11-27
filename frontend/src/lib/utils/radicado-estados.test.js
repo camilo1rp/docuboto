@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 import { RADICADO_ESTADO_LABEL, RADICADO_ESTADO_CHIP } from "./radicado.js";
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
-const SERVICIO = resolve(AQUI, "../../../../services/document-service");
+const SERVICIO = resolve(AQUI, "../../../../services/docuboto/document");
 // ADR-053: las migraciones viven juntas en `services/docuboto/migrations`.
 const MIGRACION = resolve(
   AQUI,
