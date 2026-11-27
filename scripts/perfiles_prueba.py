@@ -290,11 +290,19 @@ async def revocar_credencial(s: Sesion, secreto_totp: str) -> None:
     Es el estado que `archivista` aporta al entorno: una credencial **revocada**
     no es lo mismo que no tener ninguna, y el código lo distingue.
     """
-    r = await s.pedir(
-        "DELETE",
-        "/api/v1/auth/me/signing-key",
-        json={"step_up_totp_code": codigo_totp(secreto_totp)},
-    )
+    # El servidor no acepta dos veces el código de una misma ventana (anti-replay)
+    # y la fase 1 acaba de gastar uno al activar el TOTP: si esta llamada cae en
+    # esa misma ventana, el 401 no es un fallo, es la ventana. Se espera a la
+    # siguiente, igual que en la activación.
+    for intento in range(3):
+        r = await s.pedir(
+            "DELETE",
+            "/api/v1/auth/me/signing-key",
+            json={"step_up_totp_code": codigo_totp(secreto_totp)},
+        )
+        if r.status_code != 401 or intento == 2:
+            break
+        await asyncio.sleep(31)  # esperar a la ventana siguiente
     if r.status_code not in (200, 204):
         raise Fallo(
             f"No se pudo revocar la credencial de «{s.usuario}» ({r.status_code}): {r.text[:200]}"
