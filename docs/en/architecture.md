@@ -2,73 +2,55 @@
 
 ## Overview
 
-OrpycaMCP uses a **microservices** architecture, where each service is responsible
-for one bounded context of the document-management domain. All of them are
-independent **FastAPI** applications, each with its own data schema, and they
-communicate in two ways:
+Docuboto is **one process** ([ADR-047](adr/ADR-047-un-proceso-y-cuatro-contenedores.md),
+which amends [ADR-001](adr/ADR-001-microservices-architecture.md)): a single **FastAPI**
+application, the `app` container, mounts the routers of nine domain packages, each
+responsible for one bounded context, and runs their background loops. There is no
+`api-gateway` and no `worker` container. Packages talk to each other in two ways:
 
-- **Synchronous (HTTP/REST)**, always through the `api-gateway` — never directly
-  between services from the client.
+- **Synchronous, by function call**: each package exposes its door in `<package>/api.py`
+  and the others import it. There are no HTTP hops between domains.
 - **Asynchronous (Redis Streams)**, for domain events (a radicado created, a flow
   assigned, a document signed, etc.).
 
 ```mermaid
 graph TB
-    Cliente["Client / Frontend / Postman"]
+    Cliente["Browser / Frontend / Postman"]
 
-    subgraph edge["Edge"]
-        GW["api-gateway<br/>proxy + auth + rate limit"]
+    subgraph borde["Edge (production)"]
+        EDGE["edge — nginx<br/>TLS + per-IP rate limit"]
     end
 
-    subgraph core["Domain services"]
-        AUTH["auth-service"]
-        TEN["tenant-service"]
-        DOC["document-service"]
-        ARC["archive-service"]
-        STO["storage-service"]
-        WF["workflow-service"]
-        NOT["notification-service"]
-        SIG["signature-service"]
-        KNO["knowledge-service"]
+    subgraph app["app — one FastAPI process"]
+        MW["middleware<br/>request id · headers · identity from JWT · per-user quota"]
+        DOM["domain packages<br/>auth · tenant · document · archive · storage ·<br/>workflow · notification · signature · knowledge"]
+        BG["background tasks<br/>consumers · LTA renewal · format migration · queues"]
+        MW --> DOM
     end
 
     subgraph infra["Infrastructure"]
         PG[("PostgreSQL 15")]
         REDIS[("Redis<br/>Streams + cache")]
-        MINIO[("RustFS<br/>S3 Object Store")]
-        KC["Keycloak<br/>OIDC"]
-        MAIL["MailHog<br/>(dev only)"]
+        MINIO[("RustFS<br/>S3 object store")]
+        MAIL["Mailpit<br/>(dev only)"]
     end
 
-    Cliente -->|JWT Bearer| GW
-    GW --> AUTH
-    GW --> TEN
-    GW --> DOC
-    GW --> ARC
-    GW --> STO
-    GW --> WF
-    GW --> NOT
-    GW --> SIG
-    GW --> KNO
-
-    AUTH --> KC
-    AUTH --> PG
-    TEN --> PG
-    DOC --> PG
-    DOC --> REDIS
-    ARC --> PG
-    STO --> MINIO
-    WF --> PG
-    WF --> REDIS
-    NOT --> PG
-    NOT --> REDIS
-    NOT --> MAIL
-    SIG --> PG
-    SIG --> REDIS
-    KNO --> PG
-    KNO -->|search as the user| DOC
-    KNO -.->|PPI, only with PPI_PROVIDER_URL| PPI["Intelligence provider<br/>(optional)"]
+    Cliente --> EDGE
+    EDGE -->|JWT Bearer| MW
+    DOM --> PG
+    BG --> PG
+    DOM <--> REDIS
+    BG <--> REDIS
+    DOM --> MINIO
+    DOM --> MAIL
+    DOM -.->|PPI, only with PPI_PROVIDER_URL| PPI["Intelligence provider<br/>(optional)"]
 ```
+
+ADR-047 targets four containers (`app`, `postgres`, `edge`, `frontend`). **That target isn't
+reached yet**: Keycloak is gone ([ADR-048](adr/ADR-048-identidad-emitida-por-docuboto.md): the
+app issues identity itself), but Redis and the object store stay in the manifests until
+[ADR-049](adr/ADR-049-eventos-en-postgresql-sin-redis.md) and
+[ADR-050](adr/ADR-050-bytes-en-disco-y-archivo-sellado.md) remove them.
 
 Docuboto does not call any language model
 ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)) and is **not a tool server for
@@ -82,154 +64,162 @@ The only outbound path to intelligence is PPI v1.4.0 (contract frozen in
 when `PPI_PROVIDER_URL` is set; with it empty, nothing is registered and no call leaves. A
 tenant starts at `intelligence_provider = 'local'`, which sends nothing.
 
-The gateway signs the identity it forwards to each service (HMAC with timestamp, method and
-canonical route, [ADR-036](adr/ADR-036-identidad-atada-a-metodo-y-ruta.md)) and enforces the
-institution's status at the edge: a `suspended` institution loses the authenticated API and keeps
-its public portal read-only and the preservation of its records
-([ADR-035](adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md)).
+Identity is resolved **once per request** in `UsuarioActualMiddleware`, from the JWT, and
+travels in `request.state`; identity headers sent by the client are dropped. The nonce-signed
+identity, `X-Internal-Token`, the HTTP tenant registry, the entity's lifecycle states, and
+their veto at the edge are retired (ADR-047 §1 and §3).
 
-## Services and ports
+## The process and its containers
 
-| Service | Internal port (Docker) | Published port (host) | Responsibility |
+`services/docuboto/docuboto/` is the composition root:
+
+| Module | What it does |
+|---|---|
+| `main.py` | `create_app()`: the only place with middleware and exception handlers; mounts each package's `DOMAIN_ROUTERS`, `/health`, and `/metrics` |
+| `config.py` | `CommonSettings` (database, pool, Redis, log) and one `Settings` class per domain; environment variable names are unchanged and carry no prefix |
+| `core/lifespan.py` | One database pool and the start of the background tasks |
+| `core/tasks.py` | `BackgroundTasks`: consumers, LTA renewal, format migration, and the `trabajo_fuera` queues (`app`, light; `worker`, heavy, a name kept in the schema). Heavy work takes a slot from `heavy_slot()`, a semaphore of `HEAVY_JOBS_CONCURRENCY` (default 1) |
+| `core/security.py` | `SecurityHeadersMiddleware` (`X-Request-Id`, `nosniff`, `DENY`, `no-referrer`) and `UserRateLimitMiddleware` (`RATE_LIMIT_PER_USER`, 120/min per person) |
+
+The nine packages live side by side (`services/docuboto/<package>/`), with their tests in
+`services/docuboto/tests/<package>/`. Each package's `main.py` only exports
+`DOMAIN_ROUTERS`.
+
+| Container | Internal port (Docker) | Published port (host) | Responsibility |
 |---|---|---|---|
-| `api-gateway` | 8080 | **19080** | Central proxy, prefix-based routing, JWT validation, rate limiting |
-| `auth-service` | 8001 | **19001** | Keycloak integration, JWT issuance/validation, RBAC, security clearance (RF-SEG-08) |
-| `tenant-service` | 8002 | **19002** | Institution/tenant onboarding, dependencias, catalogs, PINAR |
-| `document-service` | 8003 | **19003** | E/S/I registration, attachments, replies, annulment, import/export, IMAP intake, OAI-PMH/CMIS |
-| `archive-service` | 8004 | **19004** | Expedientes, TRD/CCD, electronic index, physical archive, transfers |
-| `storage-service` | 8005 | **19005** | Upload/download of files in the object store, preservation (WORM/Object-Lock) |
-| `workflow-service` | 8006 | **19006** | Distribution flows, approvals (vistos buenos), rules, dead-letter |
-| `notification-service` | 8007 | **19007** | Email/alerts, outgoing webhooks, dead-letter |
-| `signature-service` | 8008 | **19008** | XAdES-B/T/LT/LTA electronic signature verifiable by third parties (ADR-034): personal, institutional seal of the index/transfer minutes, and LTA archive time-stamp renewal |
-| `knowledge-service` | 8011 | **19011** | Model-free knowledge gateway: search and antecedents via full-text, as the user (ADR-046) |
+| `app` | 8000 | **19000** (`127.0.0.1` only) | The process: API, background tasks, event consumers |
+| `migrate-docuboto` | — | — | Applies the migration chain (ADR-053) and exits; `app` waits for it |
 | `frontend` | 3000 | **19300** | SvelteKit SSR — presentation layer (E22) |
 | PostgreSQL | 5432 | **15432** | Single database, multi-schema |
-| Redis | 6379 | **16379** | Event streams + cache |
-| RustFS | 9000 | **19900** | S3 object store (replaced MinIO, ADR-027). No web console: inspect with `aws-cli` |
-| Keycloak | 8080 | **19180** | Identity Provider (OIDC) |
-| MailHog | 1025 (SMTP) / 8025 (web) | 1025 / 8025 | Email capture in development |
+| Redis | 6379 | **16379** | Event streams + cache (until ADR-049) |
+| RustFS (`minio`) | 9000 | **19900** | S3 object store (replaces MinIO, ADR-027; until ADR-050). No web console: inspect it with `aws-cli` |
+| Mailpit | 1025 (SMTP) / 8025 (web) | 1025 / 8025 | Email capture in development (`dev` profile) |
+| `edge` | 80 / 443 | 80 / 443 | Production only: nginx with TLS, per-IP rate limiting, and proxying to `app` and `frontend` |
 
-> There is no port gap for a "missing" service: the 19xxx/15432/16379 range avoids
-> clashing with other development stacks on the same machine; the internal port is
-> what services see from each other inside the `orpycamcp-net` network.
+> The 19xxx/15432/16379 range avoids clashing with other development stacks on the same machine.
 
-## Resource inventory per service
+| Package | Responsibility |
+|---|---|
+| `auth` | Identity issuer (login, sessions, ES256 JWTs, JWKS and `client_credentials`, ADR-048), RBAC, clearance (RF-SEG-08), TOTP, signing-key custody |
+| `tenant` | Configuration of the installation's entity, dependencias, catalogs, PINAR |
+| `document` | E/S/I registration, attachments, replies, annulment, import/export, IMAP ingestion, OAI-PMH/CMIS |
+| `archive` | Case files, TRD/CCD, electronic index, physical archive, transfers, disposal |
+| `storage` | Upload and read of files in the object store, preservation (WORM/Object-Lock) |
+| `workflow` | Distribution flows, approvals (vistos buenos), rules, dead-letter |
+| `notification` | Email/alerts, outgoing webhooks, dead-letter |
+| `signature` | XAdES-B/T/LT/LTA electronic signature verifiable by third parties (ADR-034): personal, institutional seal of the index/record, and LTA archive-timestamp renewal |
+| `knowledge` | Model-free knowledge gateway: full-text search and antecedentes, as the user (ADR-046) |
 
-Each service follows the standard layout (`app/routers/`, one file per resource).
+## Resource inventory per package
+
+Each package follows the standard layout (`<package>/routers/`, one per resource).
 Summary of what each one exposes:
 
-### `auth-service`
+### `auth`
 | Router | What it manages |
 |---|---|
-| `auth` | Login/token against Keycloak |
-| `clearance` | Security clearance levels (user/document classification) |
+| `auth` | Login, refresh, logout and password change (ADR-048) |
+| `oidc` | OIDC discovery, JWKS and `POST /oauth/token` (`client_credentials`) for service accounts |
+| `clearance` | Security levels (classification of users/documents) |
 | `rbac` | Roles and permissions (admin) |
 | `urd` | User management (admin) |
 | `context` | Session context (tenant, roles, permissions of the current user) |
 | `audit` | `audit_log` queries (admin) |
-| `totp` | Two-factor TOTP |
-| `signing_key` | Custody of personal signing keys (PKI signature epic) |
+| `totp` | TOTP second factor |
+| `signing_key` | Custody of personal signing keys (PKI signature epic). You activate a certificate issued offline with `python -m auth.ops.activar_certificado` inside the container |
 
-### `tenant-service`
+### `tenant`
 | Router | What it manages |
 |---|---|
-| `tenants` | Institution onboarding/lookup (schema provisioning) |
+| `config` | Entity configuration |
 | `dependencias` | Organizational units |
 | `catalogos` | General catalogs (document types, etc.) |
 | `pinar` | Institutional Archives Plan (Ac. 003/2015) |
 
-### `document-service` (the largest — the registration core)
+You provision the entity with `scripts/init-tenant.sh`; there's no HTTP route for it.
+
+### `document` (the largest — the registration core)
 | Router | What it manages |
 |---|---|
-| `documents` | CRUD for E/S/I radicados, attachments |
-| `anulacion` | Annulment of radicados |
+| `documents` | CRUD of E/S/I radicados, attachments |
+| `anulacion` | Radicado annulment |
 | `respuesta` | Replies to radicados (E↔S antecedent) |
-| `signatures` | Radicado signature status |
-| `borradores` | Drafts prior to registration |
+| `signatures` | Signature status of the radicado |
+| `borradores` | Drafts before registration |
 | `import_` / `export` | Interoperability (E11 INT-01/INT-05) — ZIP packages with fixity |
-| `ingest` | Email intake (IMAP) |
+| `ingest` | Email ingestion (IMAP) |
 | `batch` | Bulk operations |
 | `search` / `reports` | FTS search and reports |
-| `public` | Public inquiry endpoints (Ley 1712) |
+| `public` | Public-query endpoints (Ley 1712) |
 | `metadata` / `metadata_elements` | Document metadata templates |
-| `postal` | Postal shipments (incoming webhook, E20) |
+| `postal` | Postal dispatch/operator (inbound webhook E20) |
 | `cmis` / `oai` | CMIS interoperability and OAI-PMH harvesting |
-| `internal` | Inter-service endpoints sealed with `X-Internal-Token` |
 
-### `archive-service`
+### `archive`
 | Router | What it manages |
 |---|---|
-| `expedientes` | Expediente lifecycle (open/close/transfer) |
-| `indice` | Signed electronic index XML (E15) |
-| `fisico` | Physical archive: locations, conservation units, loans |
+| `expedientes` | Case-file lifecycle (open/close/transfer) |
+| `indice` | Signed XML electronic index (E15) |
+| `fisico` | Physical archive: locations, storage units, loans |
 | `transferencias` | Document transfers + FUID |
 | `tipos_documentales` / `trd` | TRD/CCD (series, subseries, retention, disposition) |
-| `metadata` | Expediente metadata templates |
-| `oai` | Multi-level OAI-PMH harvesting (fonds→series→file) |
+| `metadata` | Case-file metadata templates |
+| `oai` | Multilevel OAI-PMH harvesting (fonds→series→file) |
 
-### `storage-service`
+### `storage`
 | Router | What it manages |
 |---|---|
-| `storage` | Mediated upload / download of attachments in the object store |
+| `storage` | `POST /upload` (used by the frontend); reading bytes is `storage/api.py`, with no route |
 | `preservacion` | WORM/Object-Lock, BagIt/PREMIS AIP packaging |
 
-### `workflow-service`
+### `workflow`
 | Router | What it manages |
 |---|---|
 | `workflow` | Flow steps, distribution, tracking |
-| `visto_bueno` | Approvals (sign-off chains) |
+| `visto_bueno` | Approvals (approval chain) |
 | `rules` | Flow routing rules |
-| `admin_deadletter` | Inspection/replay/discard of failed events (DLQ) |
+| `admin_deadletter` | Inspect/replay/discard failed events (DLQ) |
 
-### `notification-service`
+### `notification`
 | Router | What it manages |
 |---|---|
-| `notifications` | Sending notifications (email/alerts) |
-| `webhooks` | Subscription and delivery of signed outgoing webhooks (HMAC) |
+| `notifications` | Notifications (email/alerts); other packages request a send through `notification/api.py` |
+| `webhooks` | Subscription and delivery of signed (HMAC) outgoing webhooks |
 | `admin_deadletter` | Notification DLQ |
 
-### `signature-service`
+### `signature`
 | Router | What it manages |
 |---|---|
-| `signature` | Personal XAdES signature and institutional seal |
+| `signature` | Personal XAdES signature (`/sign-personal`), verification; the institutional seal is reachable only through `signature/api.py` |
 | `cadena` | Signature chain/batch |
 | `admin_deadletter` | Signature DLQ |
 
-### `knowledge-service`
+### `knowledge`
 | Router | What it manages |
 |---|---|
-| `knowledge` | `/search` and `/antecedentes` (full-text, or delegated to PPI when the tenant is on `ppi`) |
-| `retorno` | PPI `content` callback: the provider asks for a document's content |
+| `knowledge` | `/search` and `/antecedentes` (full text, or delegated to PPI when the entity is on `ppi`) |
+| `retorno` | PPI `content` callback: the provider requests a document's content |
 
-## Gateway proxy pattern
+## Routing and the edge
 
-The `api-gateway` exposes a single catch-all endpoint:
-`/api/v1/{path:path}` (all HTTP methods). An ordered table of
-`(prefix, target_service)` decides where to forward each request — the first
-prefix that matches wins, so order matters (e.g. `/public/archive/` and
-`/public/signature/`, ADR-054, must be listed before the generic `/public/` prefix of `document-service`).
+FastAPI's own router does the prefix routing: each package mounts its routes with
+`include_router`. What the gateway used to do is now split this way:
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant GW as api-gateway
-    participant SVC as Target service
+- **Per-IP rate limiting** → `edge` (nginx `limit_req`, no Redis): general, login, anonymous
+  counter/PQRS submissions, and OAI-PMH/CMIS harvesting, with the budgets the gateway had
+  (`infra/nginx/orpyca.conf.template`).
+- **Per-person quota** → `UserRateLimitMiddleware` in the app (`RATE_LIMIT_PER_USER`).
+- **`X-Request-Id` and hardening headers** → `SecurityHeadersMiddleware`, the outermost
+  middleware of the app.
 
-    C->>GW: Authorization: Bearer <JWT>
-    GW->>GW: validates JWT, resolves auth_headers
-    GW->>SVC: forwards request + context headers
-    SVC-->>GW: response
-    GW-->>C: response (or 503 upstream_unavailable / 404 route_not_found)
-```
+Security rules **by design** (not accidental):
 
-Security rules **by design** in the proxy (not accidental):
-
-- **Mediated attachment download**: the gateway only exposes
-  `POST /api/v1/storage/upload`. Downloading bytes **always** goes through
-  `document-service` (`GET /api/v1/documents/{id}/anexos/{file_id}/download`), which
-  revalidates the user's clearance before requesting the file from
-  `storage-service` — the object store is never reached directly from outside.
-- **`knowledge-service` scoped down**: only `/search` and `/antecedentes` are routed.
+- **Mediated attachment download**: the only storage route is `POST /api/v1/storage/upload`.
+  Downloading bytes **always** goes through `document`
+  (`GET /api/v1/documents/{id}/anexos/{file_id}/download`), which revalidates the user's
+  clearance before reading the file through `storage/api.py` — the object store is never
+  reached directly from outside.
+- **`knowledge` is scoped**: it exposes only `/search`, `/antecedentes`, and the PPI callback.
 
 ## Asynchronous orchestration — Redis Streams
 
@@ -244,11 +234,11 @@ Real end-to-end example — **registering an incoming document**:
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant DOC as document-service
+    participant DOC as document
     participant R as Redis Streams
-    participant WF as workflow-service
-    participant SIG as signature-service
-    participant NOT as notification-service
+    participant WF as workflow
+    participant SIG as signature
+    participant NOT as notification
 
     U->>DOC: POST /api/v1/documents (register incoming)
     DOC->>DOC: assigns tracking number (SELECT FOR UPDATE)
@@ -265,72 +255,77 @@ sequenceDiagram
     end
 ```
 
-**If a consumer fails** (e.g. `notification-service` cannot send the email): the
+**If a consumer fails** (e.g. `notification` cannot send the email): the
 message stays in its PEL, is retried with backoff and, if it keeps failing, is
 moved to the `orpycamcp.notification.deadletter` stream. An administrator with
 `PERM_DLQ_ADMIN` can inspect, retry (`replay`), or discard those entries via each
-service's `admin_deadletter.py` (ADR-021).
+package's `admin_deadletter.py` (ADR-021).
 
 ## Multi-tenancy: schema isolation
 
 ```mermaid
 graph LR
     subgraph pg["PostgreSQL — a single database"]
-        PUB["public schema<br/>tenant registry"]
-        T1["tenant_demo schema"]
-        T2["tenant_icetex schema"]
-        T3["tenant_mi_entidad schema"]
+        PUB["schema public<br/>entity row"]
+        T1["schema tenant_demo"]
     end
     JWT["JWT claim: tenant_slug"] -->|resolves search_path| T1
-    JWT -->|resolves search_path| T2
-    JWT -->|resolves search_path| T3
 ```
 
-On every request, each service's middleware switches the asyncpg connection's
-`search_path` according to the JWT's `tenant_slug` claim — the tenant is never
-taken from the body nor from a client-manipulable header. The object store mirrors the same
-separation with prefixed buckets: `orpycamcp-{slug}-documents`.
+One installation serves **one entity** (ADR-047 §3), and that entity keeps its schema
+`tenant_{slug}`. On every request, `get_tenant_conn` (`orpycamcp_common.database`) sets the
+asyncpg connection's `search_path` from the JWT's `tenant_slug` — the tenant never comes from
+the body or from a client-controlled header. `public.tenants` is the entity's configuration
+row, with no lifecycle states. The object store still uses per-entity bucket names
+(`orpycamcp-{slug}-documents`) until ADR-050.
 
 ## Authentication flow
 
 ```mermaid
 sequenceDiagram
     participant U as User/Frontend
-    participant KC as Keycloak
-    participant GW as api-gateway
-    participant SVC as Target service
+    participant L as app — POST /api/v1/auth/login
+    participant MW as app — UsuarioActualMiddleware
+    participant R as package router
 
-    U->>KC: Authorization Code + PKCE
-    KC-->>U: JWT (claims: tenant_slug, user_id, roles[], permissions[])
-    U->>GW: request + Authorization: Bearer <JWT>
-    GW->>GW: validates JWT signature/issuer/kid (PyJWT)
-    GW->>SVC: forwards + resolved claims
-    SVC->>SVC: search_path = tenant_{slug}; validates permission/clearance in DB
+    U->>L: username + password + entity (from the SSR)
+    L-->>U: ES256 access JWT (sub = auth_users.id, tenant_slug) + opaque refresh
+    U->>MW: request + Authorization: Bearer <JWT>
+    MW->>MW: drops client X-User-Id, X-Username, X-User-Roles, X-Canal, X-Tenant-Slug
+    MW->>MW: checks signature, iss and aud with the app's own keys; puts the user in request.state; re-sets X-Tenant-Slug
+    MW->>R: request
+    R->>R: search_path = tenant_{slug}; checks permission/clearance in the DB
 ```
 
-Authorization is **not** decided solely at the gateway: each service revalidates
-the permission and the clearance level (RF-SEG-08) against the database at request
-time (ADR-013) — the gateway only authenticates.
+Each route decides authorization: permission and clearance level (RF-SEG-08) are
+revalidated against the database at request time (ADR-013), with the gates in
+`orpycamcp_common.clearance` (`require_permission`, `require_actor_permission`,
+`require_vetted_permission`). The same check (`enforce_permission`) applies to a route and
+to a function in `<package>/api.py`.
 
-## Inter-service communication — summary
+## Communication between packages — summary
 
 | Type | Mechanism | When it's used |
 |---|---|---|
-| Synchronous | HTTP/REST via `api-gateway` | User operations that need an immediate response |
-| Asynchronous | Redis Streams (`orpycamcp.{service}.events`) | Domain events consumed by one or more services |
-| Sealed inter-service | Direct HTTP with `X-Internal-Token` | `internal.py` endpoints only another microservice should call (never exposed to the client via the gateway behind just a permission — they're sealed with a shared token) |
+| HTTP | The app's REST API | User operations that need an immediate response |
+| Function call | `<package>/api.py` (keyword arguments, explicit `tenant_slug` and actor) | One package needs something from another: bytes (`storage/api.py`, the one object-store client), a seal (`signature/api.py`), sending email (`notification/api.py`), business days (`tenant/api.py`)… A package may import only another package's `api` (`shared/tests/test_contrato_api.py`) |
+| Asynchronous | Redis Streams (`orpycamcp.{service}.events`) | Domain events consumed by one or more packages |
 
 ## Shared library — `orpycamcp_common`
 
-Installed in every image (`pip install /shared`, built with the repo root as
-context). It provides two modules used by every service that audits or publishes
-events:
+Installed in the app image (`pip install /shared`, built with the repo root as context).
+Anything more than one package needs is defined once here; among others:
 
 - **`audit.py`** — the single write point for `public.audit_log`, with a per-tenant
   hash chain (ADR-008): `compute_hash`, `append`, `append_denial`, `verify_chain`.
 - **`events.py`** — canonical event envelope over Redis Streams (ADR-010):
   `build_event`, `publish`, `emit`, `ensure_group`, `trim_deadletter`,
   `reclaim_stale`.
+- **`database.py`** — one pool; `get_conn`, `get_vetted_conn`, `get_tenant_conn`, and
+  `acquire_tenant` for work outside a request.
+- **`clearance.py`** — the permission gates: `require_permission`,
+  `require_actor_permission`, `require_vetted_permission`, `enforce_permission`.
+- **`usuario.py`** — `UsuarioActualMiddleware`: the caller, once per request.
 
 ## See also
 

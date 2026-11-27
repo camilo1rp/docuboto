@@ -12,6 +12,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
+
 from orpycamcp_common import events
 
 

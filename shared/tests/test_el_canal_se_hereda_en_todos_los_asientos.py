@@ -25,13 +25,12 @@ Dos formas de que lo que el asistente hace en nombre de una persona se asentara
 que por definición no pasa por el gateway autenticado.
 """
 
-from tests._compose import glob_src
-
-
 import re
 from pathlib import Path
 
 import pytest
+
+from tests._compose import glob_src
 
 _SERVICES = Path(__file__).resolve().parents[2] / "services"
 
@@ -57,26 +56,22 @@ def test_ningun_asiento_fija_canal_api_a_mano() -> None:
     )
 
 
-def _asientan(main: Path) -> bool:
+def _asientan(paquete: Path) -> bool:
     return any(
         re.search(r"\b_?audit\.(append|append_denial)\(", p.read_text(encoding="utf-8"))
-        for p in (main.parent).rglob("*.py")
+        for p in paquete.rglob("*.py")
     )
 
 
 def test_todo_servicio_que_asienta_instala_el_middleware_de_traza() -> None:
-    sin_middleware = [
-        main.parent.parent.name
-        for main in sorted(glob_src(_SERVICES, "*/app/main.py"))
-        if _asientan(main) and "RequestLogMiddleware" not in main.read_text(encoding="utf-8")
-    ]
-    assert not sin_middleware, (
-        f"{sin_middleware} asientan en audit_log pero no instalan RequestLogMiddleware: "
-        "`canal_actual()` queda vacío y todo acto se asienta 'api'."
-    )
+    """Un proceso (ADR-047): la app que monta los routers de los que asientan instala la traza."""
+    main = _SERVICES / "docuboto" / "docuboto" / "main.py"
+    paquetes = [p for p in (_SERVICES / "docuboto").iterdir() if (p / "routers").is_dir()]
+    assert any(_asientan(p) for p in paquetes)
+    assert "RequestLogMiddleware" in main.read_text(encoding="utf-8")
 
 
 def test_el_censo_no_es_vacio() -> None:
     """Control positivo: sin él, un glob que no encuentra nada también pasaría."""
-    mains = list(glob_src(_SERVICES, "*/app/main.py"))
-    assert len([m for m in mains if _asientan(m)]) >= 8
+    paquetes = [p for p in (_SERVICES / "docuboto").iterdir() if (p / "routers").is_dir()]
+    assert len([p for p in paquetes if _asientan(p)]) >= 8

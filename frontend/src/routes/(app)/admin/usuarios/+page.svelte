@@ -62,12 +62,14 @@
   let actionLoading = false;
   let fUsername = "";
   let fEmail = "";
+  let fPassword = "";
   let fIsRoot = false;
   let fUsernameError = "";
 
   function openCreate() {
     fUsername = "";
     fEmail = "";
+    fPassword = "";
     fIsRoot = false;
     fUsernameError = "";
     createOpen = true;
@@ -87,6 +89,9 @@
         body: JSON.stringify({
           username: fUsername.trim(),
           email: fEmail.trim() || null,
+          // Contraseña inicial (ADR-048). Vacía: la persona no entra hasta que
+          // se la fije un administrador.
+          password: fPassword || null,
           // `callerIsRoot &&` y no solo `fIsRoot`: ocultar la casilla es UI, no
           // control. Si el estado quedara en `true` por cualquier vía (una
           // sesión que cambia, un reinicio parcial del formulario), esto impide
@@ -234,8 +239,7 @@
 
   // Espejo del 409 `restablecimiento_propio_no_permitido` del backend: hacen
   // falta dos personas. Se compara contra la identidad INTERNA (`auth_users.id`),
-  // NUNCA contra el `sub` de Keycloak — son dos UUID distintos para la misma
-  // persona y compararlos da siempre falso, en silencio.
+  // que es también el `sub` del access token (ADR-048).
   $: esUnoMismo = Boolean($userId) && selectedUser?.id === $userId;
 
   function alternarRestablecerTotp() {
@@ -379,6 +383,12 @@
           error={fUsernameError}
         />
         <FormField id="usuario-email" label="Correo (opcional)" type="email" bind:value={fEmail} />
+        <FormField
+          id="usuario-password"
+          label="Contraseña inicial (mínimo 12 caracteres)"
+          type="password"
+          bind:value={fPassword}
+        />
         <!-- ADR-024: solo un ROOT puede crear otro ROOT. Para el resto de
              administradores el backend responde 403, así que la casilla ni se
              ofrece — un control que solo puede fallar no es una opción, es un

@@ -18,8 +18,8 @@ servicio sano ve; por eso la definición vive aquí y los servicios la importan.
 guardián (`shared/tests/test_el_gate_se_define_una_vez.py`) falla si reaparece una
 definición fuera de esta librería.
 
-Autocreación y caché (ADR-013): el usuario se aprovisiona en `/validate`
-(`upsert_user_by_keycloak_sub`); la resolución NO se cachea a propósito (un permiso
+Caché (ADR-013): la persona la crea un administrador en `auth_users` (ADR-048);
+la resolución NO se cachea a propósito (un permiso
 revocado debe surtir efecto en la siguiente petición). La conexión llega con el
 `search_path` ya fijado al schema del tenant.
 
@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
+#: Nivel con el que una pre-condición interna mira sin recorte (el máximo).
+CLEARANCE_SIN_RESTRICCION = CLASIFICADA
 
 
 async def resolve_caller_clearance(

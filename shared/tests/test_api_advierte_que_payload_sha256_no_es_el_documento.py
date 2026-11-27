@@ -34,7 +34,9 @@ import pytest
 _RAIZ = Path(__file__).resolve().parents[2]
 
 #: (idioma, frase de la advertencia). Se busca en la MISMA línea que el campo
-#: listado en la respuesta de ``sign-xml`` (``{firma_id, payload_sha256, …}``).
+#: listado en la respuesta de ``sign-personal`` (``{firma_id, payload_sha256, …}``).
+#: ADR-047 retiró ``/sign-xml``: el sello institucional no tiene ruta HTTP, y la
+#: ruta pública que devuelve ``FirmaResponse`` es ``sign-personal``.
 _ADVERTENCIAS = [
     ("es", "solo es comparable entre firmas del mismo `provider`"),
     ("en", "only comparable between signatures of the same `provider`"),
@@ -45,23 +47,23 @@ _NO_SIRVE = [
 ]
 
 
-def _linea_de_sign_xml(idioma: str) -> str:
+def _linea_de_sign_personal(idioma: str) -> str:
     texto = (_RAIZ / "docs" / idioma / "api.md").read_text(encoding="utf-8")
     lineas = [
         ln
         for ln in texto.splitlines()
-        if ln.startswith("- `POST /api/v1/signature/sign-xml`") and "{firma_id, payload_sha256," in ln
+        if ln.startswith("- `POST /api/v1/signature/sign-personal`") and "{firma_id, payload_sha256," in ln
     ]
     assert len(lineas) == 1, (
-        f"docs/{idioma}/api.md: no hay exactamente una descripción de sign-xml que liste "
+        f"docs/{idioma}/api.md: no hay exactamente una descripción de sign-personal que liste "
         "`payload_sha256` en la respuesta"
     )
     return lineas[0]
 
 
 @pytest.mark.parametrize(("idioma", "frase"), _ADVERTENCIAS + _NO_SIRVE)
-def test_sign_xml_advierte_que_payload_sha256_no_es_el_documento(idioma: str, frase: str) -> None:
-    assert frase in _linea_de_sign_xml(idioma), (
-        f"docs/{idioma}/api.md: la descripción de sign-xml lista `payload_sha256` pero ya no "
+def test_sign_personal_advierte_que_payload_sha256_no_es_el_documento(idioma: str, frase: str) -> None:
+    assert frase in _linea_de_sign_personal(idioma), (
+        f"docs/{idioma}/api.md: la descripción de sign-personal lista `payload_sha256` pero ya no "
         f"advierte {frase!r}. Es el SHA-256 de los bytes firmados, no del documento."
     )

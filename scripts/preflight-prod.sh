@@ -19,7 +19,7 @@
 # Comprueba: (1) TLS válido y HTTP redirige a HTTPS; (2) los puertos internos
 # (PostgreSQL 5432, Redis 6379, almacén de objetos 9000/9001, servicios 8001-8012)
 # NO responden desde fuera. Solo LEE: no escribe nada ni modifica el host. El
-# audit de PostgreSQL/Keycloak y la rotación de credenciales siguen siendo manuales
+# audit de PostgreSQL y la rotación de credenciales siguen siendo manuales
 # (docs/es/deployment.md).
 set -uo pipefail
 

@@ -36,10 +36,10 @@ no se deja.
 
 from __future__ import annotations
 
-from tests._compose import glob_src
-
 import ast
 from pathlib import Path
+
+from tests._compose import glob_src
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
@@ -90,86 +90,91 @@ MOTIVOS = {
 
 EXCEPCIONES = {
     "pre_auth": frozenset({
-        "auth-service::auth.py::GET /api/v1/auth/me",
-        "auth-service::auth.py::GET /api/v1/auth/validate",
-        "auth-service::auth.py::POST /api/v1/auth/logout",
-        "auth-service::auth.py::POST /api/v1/auth/refresh",
-        "auth-service::auth.py::POST /api/v1/auth/token",
+        "auth::auth.py::GET /api/v1/auth/me",
+        "auth::auth.py::POST /api/v1/auth/login",
+        "auth::auth.py::POST /api/v1/auth/logout",
+        "auth::auth.py::POST /api/v1/auth/password",
+        "auth::auth.py::POST /api/v1/auth/refresh",
+        # El emisor OIDC (ADR-048): descubrimiento y JWKS son públicos por
+        # definición; /oauth/token autentica la cuenta de servicio con su secreto.
+        "auth::oidc.py::GET /.well-known/jwks.json",
+        "auth::oidc.py::GET /.well-known/openid-configuration",
+        "auth::oidc.py::POST /oauth/token",
     }),
     "propia": frozenset({
         # Catálogo de causales de la Ley 1712 (C12): es la ley, no un dato de la entidad; solo
         # exige tenant válido (get_tenant_conn) y no lee ninguna tabla.
-        "document-service::desclasificacion.py::GET /api/v1/documents/causales-reserva",
-        "auth-service::clearance.py::GET /api/v1/auth/clearance",
-        "auth-service::clearance.py::GET /api/v1/auth/clearance/check",
-        "auth-service::clearance.py::GET /api/v1/auth/security-levels",
-        "auth-service::context.py::GET /api/v1/auth/context",
-        "auth-service::context.py::POST /api/v1/auth/context/switch",
-        "auth-service::signing_key.py::DELETE /api/v1/auth/me/signing-key",
-        "auth-service::signing_key.py::GET /api/v1/auth/me/signing-key",
-        "auth-service::totp.py::DELETE /api/v1/auth/me/totp",
-        "auth-service::totp.py::GET /api/v1/auth/me/totp",
-        "auth-service::totp.py::POST /api/v1/auth/me/totp/activate",
-        "auth-service::totp.py::POST /api/v1/auth/me/totp/enroll",
-        "auth-service::totp.py::POST /api/v1/auth/me/totp/recovery-codes",
+        "document::desclasificacion.py::GET /api/v1/documents/causales-reserva",
+        "auth::clearance.py::GET /api/v1/auth/clearance",
+        "auth::clearance.py::GET /api/v1/auth/clearance/check",
+        "auth::clearance.py::GET /api/v1/auth/security-levels",
+        "auth::context.py::GET /api/v1/auth/context",
+        "auth::context.py::POST /api/v1/auth/context/switch",
+        "auth::signing_key.py::DELETE /api/v1/auth/me/signing-key",
+        "auth::signing_key.py::GET /api/v1/auth/me/signing-key",
+        "auth::totp.py::DELETE /api/v1/auth/me/totp",
+        "auth::totp.py::GET /api/v1/auth/me/totp",
+        "auth::totp.py::POST /api/v1/auth/me/totp/activate",
+        "auth::totp.py::POST /api/v1/auth/me/totp/enroll",
+        "auth::totp.py::POST /api/v1/auth/me/totp/recovery-codes",
     }),
     "interno_por_bearer": frozenset({
     }),
     "permiso_dinamico": frozenset({
-        "workflow-service::workflow.py::POST /api/v1/workflows/{radicado_id}/transactions",
+        "workflow::workflow.py::POST /api/v1/workflows/{radicado_id}/transactions",
     }),
     "turno": frozenset({
-        "workflow-service::visto_bueno.py::GET /api/v1/workflows/{radicado_id}/vistos-buenos",
-        "workflow-service::visto_bueno.py::POST /api/v1/workflows/{radicado_id}/vistos-buenos/decidir",
+        "workflow::visto_bueno.py::GET /api/v1/workflows/{radicado_id}/vistos-buenos",
+        "workflow::visto_bueno.py::POST /api/v1/workflows/{radicado_id}/vistos-buenos/decidir",
     }),
     "firma": frozenset({
-        "signature-service::signature.py::GET /api/v1/signature/firmas/{firma_id}",
-        "signature-service::signature.py::POST /api/v1/signature/verify",
+        "signature::signature.py::GET /api/v1/signature/firmas/{firma_id}",
+        "signature::signature.py::POST /api/v1/signature/verify",
     }),
     "clearance": frozenset({
-        "document-service::anulacion.py::GET /api/v1/documents/{document_id}/anulacion",
-        "document-service::documents.py::GET /api/v1/documents",
-        "document-service::documents.py::GET /api/v1/documents/by-tracking/{tracking_number:path}",
-        "document-service::documents.py::GET /api/v1/documents/{document_id}",
-        "document-service::documents.py::GET /api/v1/documents/{document_id}/anexos",
-        "document-service::documents.py::GET /api/v1/documents/{document_id}/anexos/{file_id}/download",
-        "document-service::documents.py::GET /api/v1/documents/{document_id}/historial-acceso",
-        "document-service::respuesta.py::GET /api/v1/documents/{document_id}/respuestas",
-        "document-service::search.py::GET /api/v1/search",
+        "document::anulacion.py::GET /api/v1/documents/{document_id}/anulacion",
+        "document::documents.py::GET /api/v1/documents",
+        "document::documents.py::GET /api/v1/documents/by-tracking/{tracking_number:path}",
+        "document::documents.py::GET /api/v1/documents/{document_id}",
+        "document::documents.py::GET /api/v1/documents/{document_id}/anexos",
+        "document::documents.py::GET /api/v1/documents/{document_id}/anexos/{file_id}/download",
+        "document::documents.py::GET /api/v1/documents/{document_id}/historial-acceso",
+        "document::respuesta.py::GET /api/v1/documents/{document_id}/respuestas",
+        "document::search.py::GET /api/v1/search",
     }),
     "workflow": frozenset({
-        "workflow-service::workflow.py::GET /api/v1/workflows/inbox",
-        "workflow-service::workflow.py::GET /api/v1/workflows/pending",
-        "workflow-service::workflow.py::GET /api/v1/workflows/transaction-types",
-        "workflow-service::workflow.py::GET /api/v1/workflows/{radicado_id}/current",
-        "workflow-service::workflow.py::GET /api/v1/workflows/{radicado_id}/events",
-        "workflow-service::workflow.py::GET /api/v1/workflows/{radicado_id}/history",
+        "workflow::workflow.py::GET /api/v1/workflows/inbox",
+        "workflow::workflow.py::GET /api/v1/workflows/pending",
+        "workflow::workflow.py::GET /api/v1/workflows/transaction-types",
+        "workflow::workflow.py::GET /api/v1/workflows/{radicado_id}/current",
+        "workflow::workflow.py::GET /api/v1/workflows/{radicado_id}/events",
+        "workflow::workflow.py::GET /api/v1/workflows/{radicado_id}/history",
     }),
     "catalogo": frozenset({
-        "archive-service::metadata.py::GET /api/v1/expediente-metadata/templates",
-        "archive-service::tipos_documentales.py::GET /api/v1/tipos-documentales",
-        "archive-service::tipos_documentales.py::GET /api/v1/tipos-documentales/{tipo_id}",
-        "archive-service::trd.py::GET /api/v1/trd",
-        "archive-service::trd.py::GET /api/v1/trd/cuadro",
-        "archive-service::trd.py::GET /api/v1/trd/{serie_id}",
-        "archive-service::trd.py::GET /api/v1/trd/{serie_id}/retention",
-        "archive-service::tvd.py::GET /api/v1/tvd",
-        "archive-service::tvd.py::GET /api/v1/tvd/{agrupacion_id}",
-        "archive-service::tvd.py::GET /api/v1/tvd/{agrupacion_id}/retention",
-        "document-service::metadata.py::GET /api/v1/metadata/templates",
-        "document-service::metadata_elements.py::GET /api/v1/metadata/elements",
-        "document-service::metadata_elements.py::GET /api/v1/metadata/elements/{element_id}",
-        "tenant-service::catalogos.py::GET /api/v1/catalogos",
-        "tenant-service::catalogos.py::GET /api/v1/catalogos/{catalogo}",
-        "tenant-service::config.py::GET /api/v1/business-days/calculate",
-        "tenant-service::config.py::GET /api/v1/config/asistente",
-        "tenant-service::config.py::GET /api/v1/config/holidays",
-        "tenant-service::config.py::GET /api/v1/config/params",
-        "tenant-service::config.py::GET /api/v1/config/params/{key}",
-        "tenant-service::dependencias.py::GET /api/v1/dependencias",
-        "tenant-service::dependencias.py::GET /api/v1/dependencias/by-codigo/{codigo}",
-        "tenant-service::dependencias.py::GET /api/v1/dependencias/tree",
-        "tenant-service::dependencias.py::GET /api/v1/dependencias/{dependencia_id}",
+        "archive::metadata.py::GET /api/v1/expediente-metadata/templates",
+        "archive::tipos_documentales.py::GET /api/v1/tipos-documentales",
+        "archive::tipos_documentales.py::GET /api/v1/tipos-documentales/{tipo_id}",
+        "archive::trd.py::GET /api/v1/trd",
+        "archive::trd.py::GET /api/v1/trd/cuadro",
+        "archive::trd.py::GET /api/v1/trd/{serie_id}",
+        "archive::trd.py::GET /api/v1/trd/{serie_id}/retention",
+        "archive::tvd.py::GET /api/v1/tvd",
+        "archive::tvd.py::GET /api/v1/tvd/{agrupacion_id}",
+        "archive::tvd.py::GET /api/v1/tvd/{agrupacion_id}/retention",
+        "document::metadata.py::GET /api/v1/metadata/templates",
+        "document::metadata_elements.py::GET /api/v1/metadata/elements",
+        "document::metadata_elements.py::GET /api/v1/metadata/elements/{element_id}",
+        "tenant::catalogos.py::GET /api/v1/catalogos",
+        "tenant::catalogos.py::GET /api/v1/catalogos/{catalogo}",
+        "tenant::config.py::GET /api/v1/business-days/calculate",
+        "tenant::config.py::GET /api/v1/config/asistente",
+        "tenant::config.py::GET /api/v1/config/holidays",
+        "tenant::config.py::GET /api/v1/config/params",
+        "tenant::config.py::GET /api/v1/config/params/{key}",
+        "tenant::dependencias.py::GET /api/v1/dependencias",
+        "tenant::dependencias.py::GET /api/v1/dependencias/by-codigo/{codigo}",
+        "tenant::dependencias.py::GET /api/v1/dependencias/tree",
+        "tenant::dependencias.py::GET /api/v1/dependencias/{dependencia_id}",
     }),
 }
 
@@ -243,7 +248,7 @@ def _censo() -> tuple[set[str], set[str]]:
     for ruta in sorted(glob_src(SERVICIOS, "*/app/routers/*.py")):
         if ruta.name in _ARCHIVOS_EXENTOS:
             continue
-        t, s = _censo_de(ruta.read_text(encoding="utf-8"), f"{ruta.parts[-4]}::{ruta.name}")
+        t, s = _censo_de(ruta.read_text(encoding="utf-8"), f"{ruta.parts[-3]}::{ruta.name}")
         todas |= t
         sin_gate |= s
     return todas, sin_gate

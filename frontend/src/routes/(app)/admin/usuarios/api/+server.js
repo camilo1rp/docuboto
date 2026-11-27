@@ -11,8 +11,9 @@
  * /admin/usuarios/api — Proxy SSR: listar y crear usuarios (D-05, E08).
  *
  * GET  ?page=&size=  → UserResponse[] (X-Total-Count reenviado). USUA_PERM_ADMIN.
- * POST               → crea un usuario. Body: { username, email?, keycloak_sub?,
- *                       is_root? }. USUA_PERM_ADMIN.
+ * POST               → crea un usuario. Body: { username, email?, password?,
+ *                       is_root? }. USUA_PERM_ADMIN. `password` es la contraseña
+ *                       inicial (ADR-048); la política la aplica el backend.
  *
  * NO existe en el backend (services/auth-service/app/routers/rbac.py):
  * actualizar, desactivar ni borrar un usuario — solo alta + lectura. La UI
@@ -78,7 +79,7 @@ export async function POST({ locals, request }) {
   // Allowlist explícita — nunca reenviar id/is_active ni el body íntegro
   // (anti mass-assignment: is_root es un campo sensible, se acepta EXPLÍCITAMENTE
   // como booleano, no se infiere de nada más del payload del cliente).
-  const { username, email, keycloak_sub, is_root } = body ?? {};
+  const { username, email, password, is_root } = body ?? {};
 
   if (typeof username !== "string" || !username.trim()) {
     return json(
@@ -90,8 +91,8 @@ export async function POST({ locals, request }) {
   const payload = {
     username: username.trim(),
     email: typeof email === "string" && email.trim() ? email.trim() : null,
-    keycloak_sub:
-      typeof keycloak_sub === "string" && keycloak_sub.trim() ? keycloak_sub.trim() : null,
+    // Sin recortar: los espacios de una contraseña son parte de ella.
+    password: typeof password === "string" && password ? password : null,
     is_root: is_root === true,
   };
 

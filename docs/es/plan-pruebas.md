@@ -37,8 +37,8 @@ su índice**, mientras que un *snapshot* puede contener estados que el sistema y
 producir; y un *snapshot* caduca contra las migraciones. Se paga en tiempo, a propósito.
 
 Los guiones corren **dentro de la red** (imagen `scripts/Dockerfile`), porque hablan con
-Postgres por asyncpg y con Keycloak por su API de administración, y desde el host ninguno de
-los dos se alcanza igual. La única pieza que corre en el **host** es
+Postgres por asyncpg y con la app por HTTP, y desde el host ninguno de los dos se alcanza
+igual. La única pieza que corre en el **host** es
 `scripts/gen-user-cert.sh`: la clave de la sub-CA de usuarios no entra en ningún contenedor.
 
 Si el entorno ya está montado y solo se quiere volumen o perfiles, los pasos sueltos siguen
@@ -51,7 +51,6 @@ encadena, no los sustituye.
 | Gateway / API | http://localhost:19080/docs  | verificación fuera de pantalla                              |
 | MailHog       | http://localhost:8025        | **el único sitio donde se ve** que las notificaciones salen |
 | Almacén (S3)  | http://localhost:19900       | anexos, índices firmados, actas (sin consola: `aws-cli`)    |
-| Keycloak      | http://localhost:19180/admin | identidad                                                   |
 
 El entorno crea **cinco perfiles deliberadamente distintos**. No son cinco copias con nombres
 distintos: cada uno ejercita un camino que ninguno de los otros toca, y la lista se diseñó

@@ -31,10 +31,10 @@ legítimo y no se toca: se prohíbe asignarlo a quien responde del acto.
 
 from __future__ import annotations
 
-from tests._compose import glob_src
-
 import re
 from pathlib import Path
+
+from tests._compose import glob_src
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"

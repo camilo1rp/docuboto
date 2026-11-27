@@ -1,0 +1,222 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""
+TOTP (E06, RFC 6238) — segundo factor para la firma personal.
+
+- ``router`` (``/api/v1/auth/me/totp``): identidad resuelta por ``get_caller``
+  (``UsuarioActualMiddleware``), mismo patrón que ``clearance.py``/``context.py``.
+- ``admin_router``: restablecimiento administrativo del factor de otra persona.
+
+La verificación y el estado que consulta signature al firmar no son rutas:
+son ``auth.api.verify_totp``/``totp_status`` (ADR-047 §1).
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+
+import asyncpg
+from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from orpycamcp_common.database import get_tenant_conn
+
+from auth.core.authz import Caller, get_caller, require_permission
+from auth.schemas.totp import (
+    TotpActivateRequest,
+    TotpActivateResponse,
+    TotpAdminRevokeRequest,
+    TotpAdminRevokeResponse,
+    TotpEnrollRequest,
+    TotpEnrollResponse,
+    TotpRecoveryRegenerateRequest,
+    TotpRecoveryRegenerateResponse,
+    TotpRevokeRequest,
+    TotpRevokeResponse,
+    TotpStatusResponse,
+)
+from auth.services.totp_service import TotpService
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1/auth/me/totp", tags=["totp"])
+
+# Restablecimiento ADMINISTRATIVO del segundo factor de OTRA persona.
+# Gate a nivel de router (`USUA_PERM_ADMIN`, nivel 1: leer) más el del propio
+# endpoint con `min_crud=3`, igual que las escrituras de `rbac.py`: quitarle el
+# segundo factor a OTRA persona es un acto de administración de usuarios, y a
+# nivel de lectura lo podía hacer quien solo tenía el permiso para consultar
+# la auditoría (AREA-01-01). Todos los actos de administración de usuarios
+# comparten el umbral 3, para que el botón y la llamada coincidan.
+admin_router = APIRouter(
+    prefix="/api/v1/auth",
+    tags=["totp-admin"],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def _resolve_tenant_slug_for_aad(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str:
+    """`tenant_slug` atado al AAD de AESGCM: el del access token ya verificado.
+
+    Lo deja `UsuarioActualMiddleware` (ADR-048); es el mismo que signature pasa
+    a ``auth.api.verify_totp``.
+    """
+    from orpycamcp_common.usuario import slug_de
+
+    return slug_de(request)
+
+
+# ---------------------------------------------------------------------------
+# Admin — /api/v1/auth/users/{user_id}/totp/revoke
+# ---------------------------------------------------------------------------
+
+
+@admin_router.post(
+    "/users/{user_id}/totp/revoke",
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+    response_model=TotpAdminRevokeResponse,
+    summary="Restablece el segundo factor de otra persona (queda lista para re-enrolar)",
+)
+async def revoke_totp_as_admin(
+    user_id: uuid.UUID,
+    payload: TotpAdminRevokeRequest,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> TotpAdminRevokeResponse:
+    """Cierra el encierro de quien pierde el autenticador (ver `revoke_as_admin`).
+
+    NO devuelve ningún secreto ni enrola nada en nombre de nadie: deja a la
+    persona en «sin segundo factor» para que ella misma lo registre desde su
+    propia sesión en `/perfil`. Un administrador que pudiera enrolar por otro
+    tendría de hecho su firma personal.
+    """
+    return await TotpService(conn).revoke_as_admin(
+        target_user_id=user_id,
+        admin_user_id=caller.user_id,
+        tenant_slug=request.headers.get("X-Tenant-Slug", ""),
+        motivo=payload.motivo,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public — /api/v1/auth/me/totp/*
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/enroll",
+    response_model=TotpEnrollResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Enroll (or re-enroll) a TOTP credential — reveals the secret exactly once",
+)
+async def enroll_totp(
+    payload: TotpEnrollRequest,
+    request: Request,
+    response: Response,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> TotpEnrollResponse:
+    tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
+    result = await TotpService(conn).enroll(
+        caller.user_id,
+        tenant_slug,
+        payload.step_up_totp_code,
+        payload.step_up_recovery_code,
+    )
+    # The secret is embedded in otpauth_uri — never allow a cache/proxy to store it.
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@router.post(
+    "/activate",
+    response_model=TotpActivateResponse,
+    summary="Activate a pending TOTP enrollment with the first generated code",
+)
+async def activate_totp(
+    payload: TotpActivateRequest,
+    request: Request,
+    response: Response,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> TotpActivateResponse:
+    tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
+    result = await TotpService(conn).activate(caller.user_id, tenant_slug, payload.code)
+    # La respuesta lleva los códigos de recuperación en claro — la única vez
+    # que existen fuera de la memoria del usuario. Mismo `no-store` que el
+    # `otpauth://` de enroll: ninguna caché ni proxy debe conservarlos.
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@router.get(
+    "",
+    response_model=TotpStatusResponse,
+    summary="Current caller's TOTP status — NEVER returns the secret",
+)
+async def get_totp_status(
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> TotpStatusResponse:
+    return await TotpService(conn).status(caller.user_id)
+
+
+@router.delete(
+    "",
+    response_model=TotpRevokeResponse,
+    summary="Revoke the caller's TOTP credential (step-up required if active)",
+)
+async def revoke_totp(
+    payload: TotpRevokeRequest,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> TotpRevokeResponse:
+    tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
+    await TotpService(conn).revoke_self(
+        caller.user_id,
+        tenant_slug,
+        payload.step_up_totp_code,
+        payload.step_up_recovery_code,
+    )
+    return TotpRevokeResponse(estado="revocado")
+
+
+@router.post(
+    "/recovery-codes",
+    response_model=TotpRecoveryRegenerateResponse,
+    summary="Regenerate the caller's recovery codes — reveals them exactly once",
+)
+async def regenerate_recovery_codes(
+    payload: TotpRecoveryRegenerateRequest,
+    request: Request,
+    response: Response,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> TotpRecoveryRegenerateResponse:
+    tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
+    result = await TotpService(conn).regenerate_recovery_codes(
+        caller.user_id,
+        tenant_slug,
+        payload.step_up_totp_code,
+        payload.step_up_recovery_code,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return result

@@ -12,9 +12,9 @@ Each institution (`tenant`) has its own database schema (`tenant_{slug}`), compl
 
 ## How do you add an institution?
 
-Onboarding is a **platform operation**, not an application one: `/api/v1/tenants` is **deliberately not
-exposed by the api-gateway** (any authenticated user of one institution could enumerate and write
-the others' registry; critical finding, 2026-07). It is done by `scripts/init_tenant.py` (which
+An installation serves **one institution** (ADR-047 §3); the schema per institution stays because it
+costs one statement per connection and keeps the option of hosting several. Onboarding is a **platform
+operation**, not an application one: there's no HTTP route for it. It is done by `scripts/init_tenant.py` (which
 `scripts/init-tenant.sh` runs in a container, with the database owner role):
 
 ```bash
@@ -25,23 +25,21 @@ This:
 1. Validates the slug (`^[a-z0-9-]+$`: lowercase, digits and **hyphen**, no underscore) and registers it in `public.tenants`
 2. Creates the `tenant_gobernacion_caldas` schema (the hyphen becomes an underscore) and the application role's `GRANT USAGE`
 3. Applies the migration chain in `services/docuboto/migrations/` (`global/` to `public`, `tenant/` to the new schema) and records it in the `public.schema_migrations` ledger (ADR-053)
-4. Moves the institution from `provisioning_status='pending'` to `active`
-
-tenant-service's `POST /tenants` (internal, no gateway route) only registers the `pending` row and writes
-its `audit_log` entry: the service runs with the application role and **executes no DDL**. It does not
-touch the object store either: the buckets (`orpycamcp-{slug}-documents`, and the preservation ones)
-are created by storage-service the first time it needs them.
+The app runs with the application role and **executes no DDL**. The buckets
+(`orpycamcp-{slug}-documents`, and the preservation ones) are created by the `storage` package the
+first time it needs them; ADR-050 retires the object store.
 
 ## What can go wrong?
 
 - **Duplicate slug**: the system returns `409 Conflict`
 - **Invalid slug** (uppercase, underscore, leading hyphen, fewer than 2 or more than 54 characters; the same validator as every service, `orpycamcp_common.tenant`): `422`; the schema is named `tenant_{slug}` and PostgreSQL silently truncates identifiers to 63 bytes
 - **Schema already exists**: provisioning is idempotent, it does not fail
-- **Failed migration**: the institution stays `pending` and serves no requests until provisioning finishes
+- **Failed migration**: without its schema the institution answers `503 tenant_no_provisionado` until provisioning finishes
 
 ## How does isolation work on each request?
 
-The gateway validates the JWT (`tenant_slug` claim) and forwards the tenant to the service. The
+`UsuarioActualMiddleware` validates the JWT once per request and stores the slug (`tenant_slug` claim)
+in `request.state`; an `X-Tenant-Slug` sent by the client is dropped. The
 `get_tenant_conn` dependency **validates the slug with `orpycamcp_common.tenant` (one validator: `^[a-z0-9][a-z0-9-]{1,53}$`, fail-closed, `400 invalid_tenant`),
 turns it into a schema name and double-quotes it** before setting the `search_path` on an `asyncpg`
 connection; a schema name cannot be a `$1` parameter, so the validation is what prevents injection:
@@ -69,9 +67,9 @@ event's signed envelope (ADR-010).
 
 ## Entity state
 
-An entity is only served if it is **operational**: `public.tenants.status = 'active'`,
-`provisioning_status = 'active'` and its schema exists. The api-gateway enforces it with the
-`tenant_estado` from `/auth/validate` (a suspension takes effect within ≤ 15 s, the validation cache
-TTL), and every `get_tenant_conn` re-checks it before setting the `search_path`. Public routes answer the
-same `404` for a non-existent, deactivated or unprovisioned entity; a **suspended** entity keeps its public reads (verification, OAI, CMIS, disposal publicity) and its writes answer `503 canal_no_disponible`. **Preservation exception (B10, ADR-035 §8):** suspension stops operation, not the duty to preserve. storage-service admits for a `suspended` entity (never `inactive`) only the internal routes of the explicit `RUTAS_DE_CONSERVACION` list (`app/core/conservacion.py`) with a valid `X-Internal-Token`, and records each admission (`entidad.conservacion_admitida`); archive-service's preservation phases (WORM retention, fixity) and signature-service's LTA renewal job walk `active` and `suspended` entities; packaging a new AIP waits for reactivation (it needs the attachments, which document-service vetoes), while the existing AIP's retention continues. Everything else stays vetoed. Details and alternatives in
-[ADR-035](adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md).
+There are no lifecycle states (ADR-047 §3): `public.tenants` is the institution's configuration row.
+It's served when its row and its schema exist; without the row you get `403 tenant_inactivo`, and
+without the schema `503 tenant_no_provisionado`. `get_tenant_conn` and `get_vetted_conn`
+(`orpycamcp_common.database`) check this before handing out the connection. Public routes answer the
+same `404` for a missing institution or schema. There's no suspended state and no preservation
+exception any more.

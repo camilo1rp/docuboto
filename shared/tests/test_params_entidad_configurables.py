@@ -36,7 +36,7 @@ from pathlib import Path
 from tests._chain import seed_rows
 
 RAIZ = Path(__file__).resolve().parents[2]
-FUENTE = RAIZ / "services" / "document-service" / "document" / "services" / "contexto_combinacion.py"
+FUENTE = RAIZ / "services" / "docuboto" / "document" / "services" / "contexto_combinacion.py"
 
 
 def _claves_que_lee_el_codigo() -> set[str]:

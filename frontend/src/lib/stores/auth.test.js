@@ -228,7 +228,7 @@ describe("auth store — INVARIANTE: nunca expone tokens", () => {
     "extractSessionUser (productor REAL, auth.server.js) descarta access_token/refresh_token " +
       "aunque vengan en los claims — y initSession(...) tampoco los deja colar al store",
     () => {
-      // Claims JWT decodificados tal como los produciría Keycloak — a propósito
+      // Claims JWT decodificados tal como los emite la app (ADR-048) — a propósito
       // incluyen campos de token (y otros ruido) para probar que la allowlist de
       // extractSessionUser los descarta, en vez de construir un SessionUser "a mano"
       // que por definición nunca los tendría (eso sería tautológico: ver hallazgo
@@ -238,6 +238,7 @@ describe("auth store — INVARIANTE: nunca expone tokens", () => {
         email: "op@orpyca.com",
         name: "Operador Uno",
         preferred_username: "operador1",
+        // Un claim de roles ajeno: el emisor propio no los pone y no se leen.
         realm_access: { roles: ["operador"] },
         tenant_slug: "icetex",
         // Campos que NUNCA deben sobrevivir a extractSessionUser (mass-assignment):
@@ -283,7 +284,7 @@ describe("auth store — INVARIANTE: nunca expone tokens", () => {
       for (const field of TOKEN_FIELDS) {
         expect(stored).not.toHaveProperty(field);
       }
-      expect(get(roles)).toEqual(["operador"]);
+      expect(get(roles)).toEqual([]);
       expect(get(tenantSlug)).toBe("icetex");
     },
   );

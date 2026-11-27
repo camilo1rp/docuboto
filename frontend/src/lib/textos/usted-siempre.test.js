@@ -56,7 +56,6 @@ const EXCEPCIONES = [
   "src/routes/(app)/transferencias/+page.svelte",
   "src/routes/(public)/+page.svelte",
   "src/routes/(public)/login/+page.svelte",
-  "src/routes/(public)/login/callback/+page.svelte",
   "src/routes/(public)/logout/+page.svelte",
   "src/routes/(public)/radicacion/+page.svelte",
 ];

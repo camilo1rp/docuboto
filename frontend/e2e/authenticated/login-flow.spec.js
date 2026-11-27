@@ -8,7 +8,7 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * login-flow.spec.js — Login PKCE completo contra Keycloak real.
+ * login-flow.spec.js — Login completo por el formulario propio (ADR-048).
  *
  * Corre SOLO con `--config=playwright.authenticated.config.js`, que es el que
  * apunta a este directorio; el config de humo lo sigue excluyendo por
@@ -25,7 +25,7 @@ import { hayCredenciales, iniciarSesion } from "./_sesion.js";
 // el estado que el proyecto de preparación deja para el resto.
 test.use({ storageState: { cookies: [], origins: [] } });
 
-test.describe("Login PKCE (requiere la pila levantada — ver README.md)", () => {
+test.describe("Login (requiere la pila levantada — ver README.md)", () => {
   test("un usuario válido completa el login y llega a /dashboard con sesión", async ({ page }) => {
     test.skip(!hayCredenciales(), "Faltan E2E_USERNAME/E2E_PASSWORD");
 
@@ -40,14 +40,11 @@ test.describe("Login PKCE (requiere la pila levantada — ver README.md)", () =>
   test("credenciales inválidas NO fijan sesión y no dejan pasar a /dashboard", async ({ page }) => {
     // No necesita credenciales: precisamente prueba las que no valen.
     await page.goto("/login");
-    await page.fill("#username", "usuario-invalido");
-    await page.fill("#password", "clave-incorrecta");
-    await page.click("#kc-login");
+    await page.fill("#login-username", "usuario-invalido");
+    await page.fill("#login-password", "clave-incorrecta");
+    await page.getByRole("button", { name: "Ingresar" }).click();
 
-    // Keycloak reintenta en SU propia página, no en `/login` de la aplicación:
-    // comprobar `toHaveURL(/\/login/)` daba un falso verde porque la ruta de
-    // Keycloak contiene «login-actions». Lo que importa es que NO se entra.
-    await expect(page.locator("#kc-login")).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText("Usuario o contraseña incorrectos");
     await expect(page).not.toHaveURL(/\/dashboard/);
 
     // Y que no queda sesión: la guarda SSR devuelve al login.

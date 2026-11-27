@@ -35,7 +35,7 @@ def _propios_del_manifiesto() -> dict[str, dict]:
 
 def test_se_encontraron_los_servicios_propios() -> None:
     propios = _propios_del_manifiesto()
-    assert len(propios) >= 11, f"solo {len(propios)} servicios propios en el manifiesto: guardián ciego"
+    assert set(propios) == {"app", "frontend"}, f"solo {len(propios)} servicios propios en el manifiesto: guardián ciego"
 
 
 def test_todo_servicio_propio_lleva_imagen_con_tag_obligatorio() -> None:
