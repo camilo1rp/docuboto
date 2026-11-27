@@ -135,8 +135,8 @@
       });
       if (res.status === 403) {
         throw new Error(
-          "No tienes permiso para ver este documento. Pide acceso de radicación " +
-            "a quien administre los permisos: tu turno no basta hoy para leerlo.",
+          "Usted no tiene permiso para ver este documento. Pida acceso de radicación " +
+            "a quien administre los permisos: su turno no basta hoy para leerlo.",
         );
       }
       if (!res.ok) {
@@ -462,7 +462,7 @@
     if (isTurnError || isPendingError) {
       notifyWarning(
         isTurnError
-          ? "Este documento ya no está en tu turno; se actualizó la bandeja."
+          ? "Este documento ya no está en su turno; se actualizó la bandeja."
           : "Esta solicitud ya no está pendiente; se actualizó la bandeja.",
       );
       // Refrescar bandeja para reflejar el estado real
@@ -755,7 +755,7 @@
     <EmptyState
       icon="fas fa-signature"
       title="Sin solicitudes pendientes"
-      description="No tienes documentos pendientes de firma en este momento."
+      description="No tiene documentos pendientes de firma en este momento."
     />
   {/if}
 </div>
@@ -837,7 +837,7 @@
                   {#if activo}
                     <span class="firma-chain__activo-label">
                       <i class="fas fa-hand-point-right" aria-hidden="true"></i>
-                      Tu turno
+                      Su turno
                     </span>
                   {/if}
                   {#if turno.decidido_at}
@@ -901,10 +901,10 @@
     {#if hasFirma && selectedDetail.estado === "pendiente"}
       <div class="firma-detail__actions">
         <hr class="firma-detail__divider" aria-hidden="true" />
-        <p class="firma-detail__actions-title">Acciones sobre tu turno</p>
+        <p class="firma-detail__actions-title">Acciones sobre su turno</p>
         {#if esTurnoDeVistoBueno}
           <p class="firma-detail__rol-nota">
-            Tu turno es de <strong>visto bueno</strong>: apruebas el documento, no lo firmas. La
+            Su turno es de <strong>visto bueno</strong>: usted aprueba el documento, no lo firma. La
             firma que compromete a la entidad la pone el último turno de la cadena.
           </p>
           <FormField
@@ -1017,7 +1017,7 @@
   <div class="firma-modal-form">
     <p class="firma-modal-form__info">
       <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
-      Vas a firmar electrónicamente {selectedCount}
+      Va a firmar electrónicamente {selectedCount}
       {selectedCount === 1 ? "solicitud" : "solicitudes"} de una sola vez. La firma tiene efectos jurídicos
       y no se puede deshacer.
     </p>

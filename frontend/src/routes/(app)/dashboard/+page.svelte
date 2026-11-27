@@ -200,8 +200,8 @@
         {:else if pendientes.items.length === 0}
           <EmptyState
             icon="fas fa-check-circle"
-            title="Vas al día"
-            description="No tienes radicados pendientes de trámite en este momento."
+            title="Está al día"
+            description="No tiene radicados pendientes de trámite en este momento."
           />
         {:else}
           <ul class="doc-list" role="list">
@@ -358,7 +358,7 @@
           <EmptyState
             icon="fas fa-star"
             title="Sin accesos fijados"
-            description="Fija tus pantallas de uso frecuente desde el icono de estrella en el menú lateral."
+            description="Fije sus pantallas de uso frecuente desde el icono de estrella en el menú lateral."
           />
         {:else}
           <ul class="favorites-grid" role="list">
@@ -392,7 +392,7 @@
           aria-expanded={metricsOpen}
           aria-controls="metrics-panel"
         >
-          Métricas del tenant
+          Métricas de la entidad
         </Button>
       </h2>
 

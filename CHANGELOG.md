@@ -8,6 +8,16 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/) + [Conventiona
 
 ### Changed
 
+- `feat(frontend)`: **CR-001 PR-01 — guardianes de texto y limpieza de jerga y tuteo en las seis páginas de trabajo (UI-01, UI-03).**
+  *Por qué*: Radicar mostraba códigos de requisito («RF-SEG-08», «RF-RAD-04»), «checksum SHA-256» y «tenant», y la aplicación mezclaba tú y usted (ADR-057 §7).
+  *Qué cambia*:
+  - **Glosario versionado** en `frontend/src/lib/textos/glosario.js`: términos con su uso y variantes que se evitan, patrones prohibidos y marcadores de tuteo.
+  - **Extractor de texto visible** (`lib/textos/marcado.js`): deja fuera `<script>`, `<style>`, comentarios, expresiones `{…}` y atributos que no se ven.
+  - **Dos guardianes nuevos**: `sin-codigos-en-pantalla.test.js` y `usted-siempre.test.js`. Cada uno nace con su lista de excepciones (20 y 30 archivos) y falla si un archivo fuera de ella incumple o si uno de la lista ya cumple: la lista solo encoge. Al traer `main`, sale `login/callback/+page.svelte`: el ADR-048 borró esa página. El inicio de sesión reescrito sigue en usted porque todavía tutea.
+  - **Limpieza**: Radicar, Bandeja, Borradores, Firmas, Envíos y Panel quedan fuera de las dos listas; también la página 403. Los mensajes de error de Radicar y Firmas que se arman en el script pasan a usted.
+  *Pruebas*: los dos guardianes, con casos del extractor; se actualizan `dashboard-page.test.js` («Está al día», «Métricas de la entidad»), `firmas/rol-gate-ui.test.js` y `firmas/circuito.test.js`.
+  *Impacto*: solo textos. Las excepciones de `admin/*` salen en PR-41.
+
 - `feat(auth,docuboto,shared,frontend,infra,scripts)!`: **ADR-048 — la identidad la emite Docuboto: fuera Keycloak.**
   *Por qué*: un contenedor con JVM y 1 GB sostenía una política de contraseñas, un emisor de tokens y dos clientes muertos, con un realm que había que editar a mano y que en producción ni se importaba. La autorización ya vivía en la base (ADR-013) y el segundo factor en `auth`.
   *Qué cambia*:

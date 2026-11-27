@@ -222,6 +222,6 @@ describe("la pantalla de firmas separa aprobar de firmar", () => {
   });
 
   it("dice al revisor que aprueba y no firma", () => {
-    expect(FIRMAS).toContain("apruebas el documento");
+    expect(FIRMAS).toContain("usted aprueba el documento");
   });
 });

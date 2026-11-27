@@ -94,6 +94,6 @@ describe("el revisor puede ver lo que se le pide aprobar", () => {
     // límite estrellándose contra un botón que no hace nada es lo peor de los
     // dos mundos.
     expect(PAGINA).toMatch(/res\.status === 403/);
-    expect(PAGINA).toMatch(/tu turno no basta hoy para leerlo/);
+    expect(PAGINA).toMatch(/su turno no basta hoy para leerlo/);
   });
 });
