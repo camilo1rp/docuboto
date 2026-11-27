@@ -93,7 +93,7 @@
       const res = await fetch(`/bandeja/api/${encodeURIComponent(radicado.id)}/disposition`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        loadError = mensajeError(body, `Error ${res.status} al cargar la disposición.`);
+        loadError = mensajeError(body, "No se pudo cargar la disposición.");
         return;
       }
       const body = await res.json();

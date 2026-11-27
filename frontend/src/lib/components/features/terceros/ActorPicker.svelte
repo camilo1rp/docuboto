@@ -119,7 +119,7 @@
       const res = await fetch(`/radicar/api/terceros?q=${encodeURIComponent(consulta)}`);
       const body = await res.json().catch(() => []);
       resultados = res.ok && Array.isArray(body) ? body : [];
-      if (!res.ok) notifyError(mensajeError(body, `Error ${res.status}`));
+      if (!res.ok) notifyError(mensajeError(body, "No se pudo buscar en el directorio."));
     } catch {
       resultados = [];
       notifyError("No se pudo buscar en el catálogo de terceros.");
@@ -196,7 +196,7 @@
       const body = await res.json().catch(() => ({}));
       enviando = false;
       if (!res.ok) {
-        errorModal = mensajeError(body, `Error ${res.status}`);
+        errorModal = mensajeError(body, "No se pudo crear el tercero.");
         return;
       }
       // El alta es idempotente por documento: si ya existía, se DICE en vez de

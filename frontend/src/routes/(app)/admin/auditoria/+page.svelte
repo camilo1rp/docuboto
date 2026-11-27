@@ -93,7 +93,7 @@
         lastVerifiedAt = new Date();
       } else {
         verifyState = "error";
-        verifyDetail = mensajeError(body, `Error ${res.status}`);
+        verifyDetail = mensajeError(body, "No se pudo verificar la cadena de auditoría.");
       }
     } catch {
       verifyState = "error";
@@ -133,7 +133,7 @@
         totalCount = Number(res.headers.get("X-Total-Count") ?? entries.length);
         page = targetPage;
       } else {
-        listError = mensajeError(body, `Error ${res.status}`);
+        listError = mensajeError(body, "No se pudo cargar el registro de auditoría.");
         notifyError(listError);
       }
     } catch {

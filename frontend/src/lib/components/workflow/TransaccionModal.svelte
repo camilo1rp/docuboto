@@ -49,6 +49,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import { permissions } from "$lib/stores/auth.js";
 
   export let open = false;
   /** @type {import('$lib/types/api.js').FlowStepResponse | null} */
@@ -179,7 +180,7 @@
 <Modal {open} title="Ejecutar trámite" size="md" on:close={close}>
   {#if step}
     <p class="modal-desc">
-      Registra un trámite sobre el radicado <strong>{step.tracking_number}</strong>.
+      Registre un trámite sobre el radicado <strong>{step.tracking_number}</strong>.
     </p>
     {#if catalogLoading}
       <p class="modal-loader-inline">Cargando catálogo de trámites…</p>
@@ -217,19 +218,22 @@
           placeholder="Contexto del trámite…"
           error={comentarioError}
         />
-        <details class="modal-advanced">
-          <summary>Detalles avanzados</summary>
-          <FormField
-            id="tramite-detalles"
-            label="Detalles adicionales — JSON (opcional)"
-            type="textarea"
-            bind:value={detallesJson}
-            rows={3}
-            placeholder={"{ }"}
-            hint="El catálogo no define un formulario específico por tipo; use este campo solo si el trámite lo requiere."
-            error={detallesJsonError}
-          />
-        </details>
+        <!-- El campo técnico solo lo ve quien administra (CR-001 UI-04). -->
+        {#if $permissions.includes("USUA_PERM_ADMIN")}
+          <details class="modal-advanced">
+            <summary>Detalles avanzados</summary>
+            <FormField
+              id="tramite-detalles"
+              label="Detalles adicionales — JSON (opcional)"
+              type="textarea"
+              bind:value={detallesJson}
+              rows={3}
+              placeholder={"{ }"}
+              hint="El catálogo no define un formulario específico por tipo; use este campo solo si el trámite lo requiere."
+              error={detallesJsonError}
+            />
+          </details>
+        {/if}
       </div>
     {/if}
   {/if}

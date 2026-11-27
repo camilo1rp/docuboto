@@ -91,7 +91,7 @@ describe("mensajeError — la validación de esquema también se lee", () => {
       ],
     };
     const texto = mensajeError(cuerpo, "Error 422 al reclasificar el nivel de seguridad.");
-    expect(texto).toContain("fundamento_juridico es obligatorio");
+    expect(texto).toContain("fundamento juridico es obligatorio");
     expect(texto).toContain("Ley 1712/2014");
     expect(texto).not.toContain("Error 422");
   });

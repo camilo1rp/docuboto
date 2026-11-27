@@ -18,6 +18,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import TransaccionModal from "./TransaccionModal.svelte";
+import { initSession, clearSession } from "$lib/stores/auth.js";
 
 const RAD_ID = "11111111-1111-1111-1111-111111111111";
 
@@ -132,5 +133,28 @@ describe("TransaccionModal — un trámite que cancela el paso (A8)", () => {
         expect.any(Object),
       );
     });
+  });
+});
+
+describe("TransaccionModal — el campo técnico solo para quien administra (CR-001 UI-04)", () => {
+  afterEach(() => clearSession());
+
+  async function abrir() {
+    globalThis.fetch = vi.fn(async () => jsonResponse(CATALOG));
+    render(TransaccionModal, { props: { open: true, step: STEP } });
+    await waitFor(() => expect(screen.getByLabelText(/tipo de trámite/i)).toBeTruthy());
+  }
+
+  it("un funcionario sin USUA_PERM_ADMIN no ve «Detalles avanzados»", async () => {
+    initSession({ id: "u1", permissions: ["PERM_TRAMITAR"] });
+    await abrir();
+    expect(screen.queryByText("Detalles avanzados")).toBeNull();
+    expect(document.getElementById("tramite-detalles")).toBeNull();
+  });
+
+  it("quien administra sí lo ve", async () => {
+    initSession({ id: "u1", permissions: ["USUA_PERM_ADMIN"] });
+    await abrir();
+    expect(screen.getByText("Detalles avanzados")).toBeTruthy();
   });
 });

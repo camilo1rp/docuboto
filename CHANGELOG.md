@@ -8,6 +8,16 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/) + [Conventiona
 
 ### Changed
 
+- `feat(frontend)`: **CR-001 PR-02 — errores sin códigos del servidor, campo JSON solo para administración y «Devolver al paso anterior» (UI-02, UI-04, UI-05).**
+  *Por qué*: `mensajeError` devolvía el código del servidor tal cual cuando no lo conocía, el modal de trámite ofrecía un campo JSON a cualquier funcionario y `RevertirModal` decía «no se puede deshacer» sobre un acto que se corrige con otro traslado (ADR-057 §6 y §7).
+  *Qué cambia*:
+  - **`mensajeError`**: un código que el catálogo no conoce, o un texto con un estado 4xx/5xx, se cambia por «No se pudo completar la acción. Si continúa, informe al administrador la referencia {ref}.». `ref` es el `request_id` del cuerpo si viene, o la fecha y hora. Los `detail` en español siguen pasando; si nombran un campo en `snake_case`, el nombre sale en palabras («fundamento juridico»).
+  - **29 textos de respaldo** «Error {estado}» y «(HTTP {estado})» de los `.svelte` pasan a decir qué no se pudo hacer. Los de `+page.server.js` y `+server.js` esperan al proxy único (ADR-056).
+  - **`TransaccionModal`**: «Detalles avanzados» con el campo JSON solo se pinta con `USUA_PERM_ADMIN`.
+  - **`RevertirModal`**: «Devolver al paso anterior», motivo obligatorio, sin casilla ni «no se puede deshacer», botón `primary` y en usted. Sale de la lista de excepciones de `usted-siempre`.
+  *Pruebas*: nueva `apiError.sin-fugas.test.js` (ningún mensaje casa con `snake_case` ni con un 4xx/5xx, incluido todo el catálogo); `RevertirModal.test.js` reescrita; dos casos nuevos en `TransaccionModal.test.js`; `apiError.test.js` y `expedientes-server.test.js` esperan el campo en palabras.
+  *Impacto*: el botón de la tarjeta del tablero sigue diciendo «Revertir» hasta PR-32 (verbos del glosario).
+
 - `feat(frontend)`: **CR-001 PR-01 — guardianes de texto y limpieza de jerga y tuteo en las seis páginas de trabajo (UI-01, UI-03).**
   *Por qué*: Radicar mostraba códigos de requisito («RF-SEG-08», «RF-RAD-04»), «checksum SHA-256» y «tenant», y la aplicación mezclaba tú y usted (ADR-057 §7).
   *Qué cambia*:

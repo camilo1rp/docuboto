@@ -137,7 +137,7 @@
       const body = await res.json().catch(() => ({}));
       enviando = false;
       if (!res.ok) {
-        errorAccion = mensajeError(body, `Error ${res.status}`);
+        errorAccion = mensajeError(body, "No se pudo ejecutar la eliminación.");
         return;
       }
       // El resultado se queda EN EL MODAL en vez de cerrarlo con un toast: hay
@@ -161,7 +161,7 @@
       const body = await res.json().catch(() => ({}));
       enviando = false;
       if (!res.ok) {
-        notifyError(mensajeError(body, `Error ${res.status}`));
+        notifyError(mensajeError(body, "No se pudo firmar el acta."));
         return;
       }
       // Se dice cuál de los dos desenlaces fue: «reintentado» sin decir si
@@ -189,7 +189,7 @@
         // El detalle del backend se muestra TAL CUAL: distingue «el plazo
         // sigue abierto hasta el X» de «el lote no está publicado», y esa
         // diferencia es la que dice si hay que esperar o corregir.
-        errorAccion = mensajeError(body, `Error ${res.status}`);
+        errorAccion = mensajeError(body, "No se pudo completar la acción sobre el lote.");
         enviando = false;
         return;
       }

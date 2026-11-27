@@ -1243,9 +1243,7 @@
       } else {
         // 409 (`desclasificacion_requiere_aprobacion`, `desclasificacion_pendiente`,
         // `nivel_cambio`…) y 422 llevan su mensaje en español en apiError.js.
-        notifyError(
-          mensajeError(result, `Error ${res.status} al reclasificar el nivel de seguridad.`),
-        );
+        notifyError(mensajeError(result, "No se pudo reclasificar el nivel de seguridad."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor de documentos.");

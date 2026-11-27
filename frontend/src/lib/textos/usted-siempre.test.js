@@ -35,7 +35,6 @@ const EXCEPCIONES = [
   "src/lib/components/features/terceros/CascadaDivipola.svelte",
   "src/lib/components/layout/AppLayout.svelte",
   "src/lib/components/workflow/FinalizarTramiteModal.svelte",
-  "src/lib/components/workflow/RevertirModal.svelte",
   "src/routes/(app)/admin/+page.svelte",
   "src/routes/(app)/admin/auditoria/+page.svelte",
   "src/routes/(app)/admin/catalogos/+page.svelte",

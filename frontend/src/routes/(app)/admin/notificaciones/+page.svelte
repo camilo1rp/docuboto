@@ -73,7 +73,7 @@
       if (res.ok) {
         history = Array.isArray(body) ? body : [];
       } else {
-        historyError = mensajeError(body, `Error ${res.status}`);
+        historyError = mensajeError(body, "No se pudo cargar el historial de envíos.");
         notifyError(historyError);
       }
     } catch {

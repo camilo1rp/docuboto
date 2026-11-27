@@ -524,7 +524,7 @@ describe("expedientes/+page.server.js#actions.create — allowlist anti mass-ass
 
     expect(result.status).toBe(422);
     expect(result.data.error).toBe("metadata_validation_failed");
-    expect(result.data.detail).toContain("monto_contrato");
+    expect(result.data.detail).toContain("monto contrato");
   });
 
   it("422 con detail como lista de dicts (RequestValidationError sin handler propio) se normaliza a string (M-3)", async () => {
@@ -596,7 +596,7 @@ describe("expedientes/+page.server.js#actions.create — allowlist anti mass-ass
 
     expect(result.status).toBe(422);
     expect(result.data.error).toBe("metadata_validation_failed");
-    expect(result.data.detail).toBe("'monto_contrato' is a required property");
+    expect(result.data.detail).toBe("'monto contrato' is a required property");
   });
 });
 

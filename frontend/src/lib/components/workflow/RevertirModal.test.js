@@ -11,9 +11,10 @@
  * RevertirModal.test.js — (T-Fase1, RF-FLU-08).
  *
  * Cubre:
- *  - Doble confirmación: motivo obligatorio (≥5 caracteres) Y casilla marcada
- *    antes de que el botón "Revertir" quede habilitado / haga algo al pulsarse.
- *  - El botón que ejecuta usa la variante `danger`; "Cancelar" usa `ghost`.
+ *  - «Devolver al paso anterior» se corrige con otro traslado (ADR-057 §6): el
+ *    texto no dice que sea irreversible y no hay casilla de «Entiendo…».
+ *  - Motivo obligatorio (≥5 caracteres) antes de llamar al proxy.
+ *  - El botón que ejecuta usa `primary`; "Cancelar" usa `ghost`.
  *  - POST /bandeja/api/{radicado_id}/rollback con `{ motivo }` en el body (el
  *    backend ahora exige motivo — ver bandeja/api/[id]/rollback/+server.js).
  */
@@ -41,20 +42,26 @@ function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), { status });
 }
 
-describe("RevertirModal", () => {
-  it("el botón Revertir usa la variante danger; Cancelar usa ghost", () => {
+describe("RevertirModal — Devolver al paso anterior (CR-001 UI-05)", () => {
+  it("se titula «Devolver al paso anterior» y no afirma que sea irreversible", () => {
     render(RevertirModal, { props: { open: true, step: STEP } });
-    expect(screen.getByRole("button", { name: /revertir/i }).className).toContain("op-btn--danger");
-    expect(screen.getByRole("button", { name: "Cancelar" }).className).toContain("op-btn--ghost");
+    expect(screen.getByRole("heading", { name: "Devolver al paso anterior" })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/no se puede deshacer/i);
+    expect(document.body.textContent).toMatch(/puede trasladarlo de nuevo/i);
   });
 
-  it("el botón Revertir está deshabilitado hasta marcar la casilla de confirmación", async () => {
+  it("no tiene casilla de confirmación: el motivo basta", () => {
     render(RevertirModal, { props: { open: true, step: STEP } });
-    const boton = screen.getByRole("button", { name: /revertir/i });
-    expect(boton).toBeDisabled();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.getByRole("button", { name: /devolver/i }).hasAttribute("disabled")).toBe(false);
+  });
 
-    await fireEvent.click(screen.getByRole("checkbox"));
-    expect(boton).not.toBeDisabled();
+  it("el botón Devolver no usa el rojo de lo definitivo; Cancelar usa ghost", () => {
+    render(RevertirModal, { props: { open: true, step: STEP } });
+    expect(screen.getByRole("button", { name: /devolver/i }).className).toContain(
+      "op-btn--primary",
+    );
+    expect(screen.getByRole("button", { name: "Cancelar" }).className).toContain("op-btn--ghost");
   });
 
   it("exige motivo de al menos 5 caracteres antes de llamar al proxy", async () => {
@@ -62,14 +69,13 @@ describe("RevertirModal", () => {
     globalThis.fetch = fetchMock;
 
     render(RevertirModal, { props: { open: true, step: STEP } });
-    await fireEvent.click(screen.getByRole("checkbox"));
-    await fireEvent.click(screen.getByRole("button", { name: /revertir/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /devolver/i }));
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getByText(/describa el motivo de la reversión/i)).toBeTruthy();
+    expect(screen.getByText(/escriba el motivo de la devolución/i)).toBeTruthy();
   });
 
-  it("POST /bandeja/api/{radicado_id}/rollback con el motivo en el body cuando motivo y confirmación están completos", async () => {
+  it("POST /bandeja/api/{radicado_id}/rollback con el motivo en el body", async () => {
     const fetchMock = vi.fn(async (url, opts) => {
       expect(url).toBe(`/bandeja/api/${RAD_ID}/rollback`);
       expect(opts.method).toBe("POST");
@@ -82,11 +88,10 @@ describe("RevertirModal", () => {
     globalThis.fetch = fetchMock;
 
     render(RevertirModal, { props: { open: true, step: STEP } });
-    await fireEvent.input(screen.getByLabelText(/motivo de la reversión/i), {
+    await fireEvent.input(screen.getByLabelText(/motivo de la devolución/i), {
       target: { value: "Se asignó por error a la dependencia incorrecta." },
     });
-    await fireEvent.click(screen.getByRole("checkbox"));
-    await fireEvent.click(screen.getByRole("button", { name: /revertir/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /devolver/i }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
   });
@@ -96,17 +101,11 @@ describe("RevertirModal", () => {
     expect(screen.getByText(/queda registrado en la traza del radicado/i)).toBeTruthy();
   });
 
-  it("la casilla de confirmación vive en un label con objetivo táctil ampliable (revisión UX Fase 1, #2)", () => {
-    render(RevertirModal, { props: { open: true, step: STEP } });
-    const checkbox = screen.getByRole("checkbox");
-    expect(checkbox.closest("label")?.className).toContain("confirm-check");
-  });
-
   it("recorta el motivo a 500 caracteres en el cliente (espejo del límite del backend)", async () => {
     render(RevertirModal, { props: { open: true, step: STEP } });
-    await fireEvent.input(screen.getByLabelText(/motivo de la reversión/i), {
+    await fireEvent.input(screen.getByLabelText(/motivo de la devolución/i), {
       target: { value: "a".repeat(600) },
     });
-    expect(screen.getByLabelText(/motivo de la reversión/i).value).toHaveLength(500);
+    expect(screen.getByLabelText(/motivo de la devolución/i).value).toHaveLength(500);
   });
 });

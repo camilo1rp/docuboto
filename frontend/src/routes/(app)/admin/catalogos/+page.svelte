@@ -81,7 +81,7 @@
         items = Array.isArray(raw) ? raw : [];
       } else {
         const body = await res.json().catch(() => ({}));
-        itemsError = mensajeError(body, `Error ${res.status}`);
+        itemsError = mensajeError(body, "No se pudieron cargar los elementos del catálogo.");
       }
     } catch {
       itemsError = "No se pudo conectar al servidor de catálogos.";

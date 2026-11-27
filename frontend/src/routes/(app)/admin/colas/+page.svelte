@@ -89,7 +89,7 @@
         totalCount = Number(res.headers.get("X-Total-Count") ?? items.length);
         page = targetPage;
       } else {
-        listError = mensajeError(body, `Error ${res.status}`);
+        listError = mensajeError(body, "No se pudo cargar la cola.");
         notifyError(listError);
       }
     } catch {
@@ -150,7 +150,7 @@
         detailError =
           res.status === 404
             ? "No se encontró el evento, o tu clearance no permite verlo."
-            : mensajeError(body, `Error ${res.status}`);
+            : mensajeError(body, "No se pudo cargar el evento.");
       }
     } catch {
       detailError = "No se pudo conectar al servidor de colas de errores.";

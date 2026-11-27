@@ -85,10 +85,7 @@
       const res = await fetch(`/bandeja/api/${encodeURIComponent(radicado.id)}/publicacion`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        loadError = mensajeError(
-          body,
-          `Error ${res.status} al consultar el estado de publicación.`,
-        );
+        loadError = mensajeError(body, "No se pudo consultar el estado de publicación.");
         return;
       }
       estado = await res.json();

@@ -111,7 +111,7 @@
       const body = await res.json().catch(() => ({}));
       enviando = false;
       if (!res.ok) {
-        errorModal = mensajeError(body, `Error ${res.status}`);
+        errorModal = mensajeError(body, "No se pudo guardar el proyecto.");
         return;
       }
       cerrar();
