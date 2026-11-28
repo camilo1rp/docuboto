@@ -22,10 +22,12 @@
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
+// Una consola para los cuatro grupos consumidores (ADR-049 §4): el grupo va en la ruta.
 const SERVICE_PATHS = {
-  workflow: "workflow/admin/deadletter",
-  notification: "notification/admin/deadletter",
-  signature: "signature/admin/deadletter",
+  workflow: "admin/deadletter/workflow",
+  notification: "admin/deadletter/notification",
+  signature: "admin/deadletter/signature",
+  inteligencia: "admin/deadletter/inteligencia",
 };
 
 /** @type {import('./$types').RequestHandler} */

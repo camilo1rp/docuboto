@@ -9,14 +9,13 @@
 
 /**
  * /admin/colas/api/[service] — Proxy SSR: listado de dead-letters (DLQ,
- * ADR-021 Fase 5) de UNO de los tres servicios que exponen la cola
- * (`admin_deadletter.py` en workflow-service, notification-service y
- * signature-service). `service` está en una allowlist cerrada — nunca se
+ * ADR-021 Fase 5) de UNO de los cuatro grupos consumidores, en la consola
+ * única `/api/v1/admin/deadletter/{grupo}` (ADR-049 §4). `service` está en
+ * una allowlist cerrada — nunca se
  * interpola libremente en la URL del gateway (evita construir un proxy
  * abierto a rutas arbitrarias).
  *
- * Gate REAL del backend: `PERM_DLQ_ADMIN` (NO `USUA_PERM_ADMIN` — verificado
- * leyendo los 3 routers). El listado exige además `X-User-Id` vía
+ * Gate REAL del backend: `PERM_DLQ_ADMIN` (NO `USUA_PERM_ADMIN`). El listado exige además `X-User-Id` vía
  * `get_actor` (401 si falta).
  *
  * Cabeceras reenviadas intactas:
@@ -28,10 +27,12 @@
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
+// Una consola para los cuatro grupos consumidores (ADR-049 §4): el grupo va en la ruta.
 const SERVICE_PATHS = {
-  workflow: "workflow/admin/deadletter",
-  notification: "notification/admin/deadletter",
-  signature: "signature/admin/deadletter",
+  workflow: "admin/deadletter/workflow",
+  notification: "admin/deadletter/notification",
+  signature: "admin/deadletter/signature",
+  inteligencia: "admin/deadletter/inteligencia",
 };
 
 /** @type {import('./$types').RequestHandler} */

@@ -10,7 +10,7 @@
 /**
  * colas-server.test.js — Proxies BFF de /admin/colas/api/[service] (D-05,
  * ADR-021 Fase 5). Cubre: guard 401, allowlist cerrada de `service`
- * (workflow/notification/signature — nunca interpolado libremente en la URL
+ * (workflow/notification/signature/inteligencia — nunca interpolado libremente en la URL
  * del gateway, es un proxy CERRADO, no abierto), escapado de [eventId], y el
  * caso central de `discard` (irreversible): exige `eventId` y `reason` (>=10
  * chars) ANTES de tocar el gateway, y un `service` fuera del allowlist se
@@ -79,7 +79,7 @@ describe("GET /admin/colas/api/[service]", () => {
     },
   );
 
-  it.each(["workflow", "notification", "signature"])(
+  it.each(["workflow", "notification", "signature", "inteligencia"])(
     "service=%s válido: llama a la ruta interna mapeada del gateway",
     async (service) => {
       let capturedUrl;
@@ -95,7 +95,7 @@ describe("GET /admin/colas/api/[service]", () => {
         params: { service },
         url: new URL("http://x/"),
       });
-      expect(capturedUrl).toContain(`/${service}/admin/deadletter/`);
+      expect(capturedUrl).toContain(`/admin/deadletter/${service}/`);
     },
   );
 
@@ -309,7 +309,7 @@ describe("POST /admin/colas/api/[service]/[eventId]/discard — irreversible", (
     // encodeURIComponent("") === "" — el proxy no valida explícitamente que
     // eventId no esté vacío; se documenta el comportamiento actual: la URL
     // queda con un segmento vacío que el backend responderá con 404/405.
-    expect(capturedUrl).toMatch(/deadletter\/\/discard$/);
+    expect(capturedUrl).toMatch(/deadletter\/workflow\/\/discard$/);
   });
 
   it("allowlist: solo reason viaja (trim aplicado), nunca el body íntegro", async () => {
@@ -335,7 +335,7 @@ describe("POST /admin/colas/api/[service]/[eventId]/discard — irreversible", (
     });
 
     expect(res.status).toBe(200);
-    expect(capturedUrl).toContain("/signature/admin/deadletter/e-42/discard");
+    expect(capturedUrl).toContain("/admin/deadletter/signature/e-42/discard");
     expect(capturedBody).toEqual({ reason: "el operador confirmó que el evento es obsoleto" });
   });
 
