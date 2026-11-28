@@ -175,21 +175,18 @@ You provision the entity with `scripts/init-tenant.sh`; there's no HTTP route fo
 | `workflow` | Flow steps, distribution, tracking |
 | `visto_bueno` | Approvals (approval chain) |
 | `rules` | Flow routing rules |
-| `admin_deadletter` | Inspect/replay/discard failed events (DLQ) |
 
 ### `notification`
 | Router | What it manages |
 |---|---|
 | `notifications` | Notifications (email/alerts); other packages request a send through `notification/api.py` |
 | `webhooks` | Subscription and delivery of signed (HMAC) outgoing webhooks |
-| `admin_deadletter` | Notification DLQ |
 
 ### `signature`
 | Router | What it manages |
 |---|---|
 | `signature` | Personal XAdES signature (`/sign-personal`), verification; the institutional seal is reachable only through `signature/api.py` |
 | `cadena` | Signature chain/batch |
-| `admin_deadletter` | Signature DLQ |
 
 ### `knowledge`
 | Router | What it manages |
@@ -259,8 +256,9 @@ sequenceDiagram
 **If a consumer fails** (e.g. `notification` cannot send the email): the
 delivery stays unconfirmed, the reclaim sweep retries it and, on the fifth delivery,
 parks it in `evento_dead_letter` with its last error. An administrator with
-`PERM_DLQ_ADMIN` can inspect, retry (`replay`), or discard those entries via each
-package's `admin_deadletter.py` (ADR-021).
+`PERM_DLQ_ADMIN` can inspect, retry (`replay`), or discard those entries in the
+single console `/api/v1/admin/deadletter/{grupo}` (`docuboto/routers/admin_deadletter.py`,
+ADR-021, ADR-049 §4), intelligence included.
 
 ## Multi-tenancy: schema isolation
 

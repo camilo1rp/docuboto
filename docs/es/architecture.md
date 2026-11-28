@@ -175,21 +175,18 @@ La entidad se da de alta con `scripts/init-tenant.sh`; no hay ruta HTTP para ell
 | `workflow` | Pasos de flujo, distribución, tracking |
 | `visto_bueno` | Vistos buenos (cadena de aprobación) |
 | `rules` | Reglas de enrutamiento de flujos |
-| `admin_deadletter` | Inspección/replay/discard de eventos fallidos (DLQ) |
 
 ### `notification`
 | Router | Qué gestiona |
 |---|---|
 | `notifications` | Notificaciones (correo/alertas); el envío lo piden los demás paquetes por `notification/api.py` |
 | `webhooks` | Suscripción y entrega de webhooks salientes firmados (HMAC) |
-| `admin_deadletter` | DLQ de notificaciones |
 
 ### `signature`
 | Router | Qué gestiona |
 |---|---|
 | `signature` | Firma XAdES personal (`/sign-personal`), verificación; el sello institucional solo es alcanzable por `signature/api.py` |
 | `cadena` | Cadena/lote de firmas |
-| `admin_deadletter` | DLQ de firma |
 
 ### `knowledge`
 | Router | Qué gestiona |
@@ -260,7 +257,8 @@ sequenceDiagram
 la entrega queda sin confirmar, la reclamación la reintenta y, a la quinta, se aparca
 en `evento_dead_letter` con su último error. Un administrador con
 `PERM_DLQ_ADMIN` puede inspeccionar, reintentar (`replay`) o descartar
-(`discard`) esas entradas vía `admin_deadletter.py` de cada paquete (ADR-021).
+(`discard`) esas entradas en la consola única `/api/v1/admin/deadletter/{grupo}`
+(`docuboto/routers/admin_deadletter.py`, ADR-021, ADR-049 §4), también las de inteligencia.
 
 ## Multi-tenancy: aislamiento por schema
 
