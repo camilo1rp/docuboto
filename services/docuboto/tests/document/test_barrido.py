@@ -71,12 +71,14 @@ async def test_una_fase_que_falla_no_impide_las_siguientes(monkeypatch) -> None:
     monkeypatch.setattr(barrido.BatchService, "purgar_lotes_antiguos", retira)
     monkeypatch.setattr(barrido, "drenar_callbacks_diferidos", AsyncMock(return_value=0))
     monkeypatch.setattr(barrido.events, "purgar", AsyncMock(return_value=0))
+    monkeypatch.setattr(barrido.dead_letter, "purgar_terminales", AsyncMock(return_value=0))
     r = await barrido.barrer_tenant("demo")
     assert r == {
         "huerfanos": 0,
         "lotes_reanudados": 2,
         "lotes_retirados": 5,
         "eventos_purgados": 0,
+        "dead_letters_purgados": 0,
         "callbacks_diferidos": 0,
     }
     purga.assert_awaited_once()

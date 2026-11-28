@@ -275,7 +275,8 @@ def test_ningun_documento_manda_a_dar_de_alta_un_tenant_por_http() -> None:
 
 
 def test_adr_021_no_dice_que_el_dlq_de_notification_esta_pendiente() -> None:
-    assert "/replay" in _leer("services/docuboto/notification/routers/admin_deadletter.py")
+    consola = _leer("services/docuboto/docuboto/routers/admin_deadletter.py")
+    assert "/replay" in consola and '"notification": notification_replay.replay' in consola
     adr = "docs/es/adr/ADR-021-reclamacion-deadletter-eventos.md"
     assert not _contiene(adr, "notification-service (Incremento 2) queda pendiente")
     assert not _contiene(adr, "notification queda acoplado al Inc. 2")

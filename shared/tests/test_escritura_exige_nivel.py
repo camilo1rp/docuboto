@@ -147,18 +147,12 @@ SIN_NIVEL_DECLARADAS = frozenset({
     # la misma tanda. Estas quedan declaradas, no aprobadas: subirlas a 2/3 es el
     # barrido siguiente (cadena de firma, DLQ, alta de terceros; los webhooks ya exigen nivel 3, OMI-03).
     "document::terceros.py::POST ::PERM_RADI",
-    "notification::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
-    "notification::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
-    "signature::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
-    "signature::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
     "signature::cadena.py::POST /batch::PERM_FIRMA",
     "signature::cadena.py::POST /requests/{solicitud_id}/challenge::PERM_FIRMA",
     "signature::cadena.py::POST /requests/{solicitud_id}/reject::PERM_FIRMA",
     "signature::cadena.py::POST /requests/{solicitud_id}/sign::PERM_FIRMA",
     "signature::cadena.py::POST /requests/{solicitud_id}/vobo::PERM_FIRMA",
     "signature::cadena.py::POST /requests::PERM_FIRMA",
-    "workflow::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
-    "workflow::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
     # Ingesta de preparación del asistente de radicación: prepara el MISMO acto que
     # `documents.py::POST` (PERM_RADI nivel 1) y sube de nivel con él, no antes.
     "knowledge::ingesta.py::DELETE /ingesta/{external_ref}::PERM_RADI",

@@ -16,7 +16,7 @@ Aquí, lo propio del worker:
      dead-letter y su mantenimiento diario.
   2. `_handle` enruta por tipo de evento: los de flujo a `process_event`, el resto
      a `process_document_event`.
-  3. `_mantenimiento_diario` aísla los fallos: uno no impide el otro.
+  3. `_mantenimiento_diario` corre la retención de dedup (la de dead-letters es del barrido).
 """
 
 from __future__ import annotations
@@ -80,44 +80,17 @@ async def test_handle_propaga_el_fallo_para_que_quede_pendiente() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mantenimiento_diario_corre_las_dos_retenciones() -> None:
-    with (
-        patch.object(stream_worker.retention, "run_once", new=AsyncMock()) as dedup,
-        patch.object(stream_worker.deadletter_retention, "run_once", new=AsyncMock()) as dlq,
-    ):
+async def test_mantenimiento_diario_corre_la_retencion_de_dedup() -> None:
+    with patch.object(stream_worker.retention, "run_once", new=AsyncMock()) as dedup:
         await stream_worker._mantenimiento_diario()
-
     dedup.assert_awaited_once()
-    dlq.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_un_fallo_de_la_retencion_de_dedup_no_impide_la_del_dead_letter() -> None:
-    with (
-        patch.object(
-            stream_worker.retention, "run_once", new=AsyncMock(side_effect=RuntimeError("db"))
-        ),
-        patch.object(stream_worker.deadletter_retention, "run_once", new=AsyncMock()) as dlq,
-        patch.object(stream_worker, "logger") as log,
+async def test_un_fallo_de_la_retencion_lo_aisla_el_bus() -> None:
+    """Sube al bus, que lo registra y sigue consumiendo (`tests/docuboto/test_bus.py`)."""
+    with patch.object(
+        stream_worker.retention, "run_once", new=AsyncMock(side_effect=RuntimeError("db"))
     ):
-        await stream_worker._mantenimiento_diario()
-
-    dlq.assert_awaited_once()
-    assert any("dedup" in c.args[0] for c in log.warning.call_args_list)
-
-
-@pytest.mark.asyncio
-async def test_un_fallo_de_la_retencion_del_dead_letter_no_sube() -> None:
-    with (
-        patch.object(stream_worker.retention, "run_once", new=AsyncMock()) as dedup,
-        patch.object(
-            stream_worker.deadletter_retention,
-            "run_once",
-            new=AsyncMock(side_effect=RuntimeError("db")),
-        ),
-        patch.object(stream_worker, "logger") as log,
-    ):
-        await stream_worker._mantenimiento_diario()
-
-    dedup.assert_awaited_once()
-    assert any("dead-letter" in c.args[0] for c in log.warning.call_args_list)
+        with pytest.raises(RuntimeError, match="db"):
+            await stream_worker._mantenimiento_diario()

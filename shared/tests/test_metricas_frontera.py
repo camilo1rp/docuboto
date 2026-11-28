@@ -85,10 +85,21 @@ def test_las_senales_son_las_admitidas() -> None:
 
 
 def test_la_senal_dlq_cubre_a_los_que_escriben_la_dlq() -> None:
-    escriben = {p.parts[-3] for p in glob_src(SERVICIOS, "*/app/repositories/dead_letter_repository.py")}
-    assert len(escriben) >= 3, f"censo de la DLQ vacío o incompleto: {sorted(escriben)}"
+    """Escribe la DLQ todo worker cuyo `on_dead_letter` es `dead_letter.persistir` (ADR-049 §4);
+    la métrica tiene que importar el grupo de cada uno."""
+    escriben = {
+        p.parts[-3]
+        for p in glob_src(SERVICIOS, "*/app/workers/*.py")
+        if "dead_letter.persistir" in p.read_text(encoding="utf-8")
+    }
+    assert len(escriben) >= 4, f"censo de la DLQ vacío o incompleto: {sorted(escriben)}"
     texto = METRICS.read_text(encoding="utf-8")
-    medidos = {d for d in escriben if f"from {d}.core.constants import DLQ_GROUP" in texto}
+    medidos = {
+        d
+        for d in escriben
+        if f"from {d}.core.constants import DLQ_GROUP" in texto
+        or f"from {d}.workers.intelligence_consumer import GROUP" in texto
+    }
     assert medidos == escriben, f"escriben la DLQ: {sorted(escriben)}; medidos: {sorted(medidos)}"
 
 

@@ -11,6 +11,8 @@
 
 Cuatro servicios copiaban `_extract_ref`/`resolve_deadletter_level[s]` y filtraban en
 Python sobre un tope de 1000 candidatas. Estos guardianes impiden que la copia vuelva.
+Desde ADR-049 §4 hay un solo repositorio (`docuboto/core/dead_letter.py`) y una sola
+consola (`docuboto/routers/admin_deadletter.py`) para los cuatro grupos.
 """
 
 from __future__ import annotations
@@ -26,7 +28,10 @@ from tests._compose import paquete_de
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
-DLQ = ("workflow-service", "signature-service", "notification-service")
+DLQ = ("workflow-service", "signature-service", "notification-service", "knowledge-service")
+APP = SERVICIOS / "docuboto"
+REPOSITORIO = APP / "docuboto" / "core" / "dead_letter.py"
+CONSOLA = APP / "docuboto" / "routers" / "admin_deadletter.py"
 
 pytestmark = pytest.mark.skipif(
     not SERVICIOS.is_dir(), reason="los directorios de servicios no están montados"
@@ -47,12 +52,9 @@ def test_ninguna_copia_del_filtro_en_python(svc: str) -> None:
         )
 
 
-@pytest.mark.parametrize("svc", DLQ)
-def test_el_repositorio_usa_la_fuente_unica(svc: str) -> None:
-    pkg = paquete_de(SERVICIOS / svc)
-    assert pkg is not None, svc
-    texto = (pkg / "repositories" / "dead_letter_repository.py").read_text()
-    assert "from orpycamcp_common import deadletter" in texto
+def test_el_repositorio_usa_la_fuente_unica() -> None:
+    texto = REPOSITORIO.read_text()
+    assert "from orpycamcp_common import audit, deadletter" in texto
     # Ninguna lectura de una fila de la DLQ por id se hace sin pasar por el gate.
     assert not re.search(r"FROM evento_dead_letter\s+WHERE\s+event_id", texto)
 
@@ -103,9 +105,10 @@ def _mutaciones_fuera_de_lista(fuente: str) -> list[str]:
     return sorted(set(hallazgos))
 
 
-@pytest.mark.parametrize("svc", DLQ)
+@pytest.mark.parametrize("svc", (*DLQ, "docuboto"))
 def test_solo_transition_status_y_purge_mutan_la_dlq(svc: str) -> None:
-    for fuente in (paquete_de(SERVICIOS / svc) or SERVICIOS / svc).rglob("*.py"):
+    raiz = APP / "docuboto" if svc == "docuboto" else (paquete_de(SERVICIOS / svc) or SERVICIOS / svc)
+    for fuente in raiz.rglob("*.py"):
         fuera = _mutaciones_fuera_de_lista(fuente.read_text())
         assert not fuera, (
             f"{fuente.relative_to(RAIZ)}: {fuera} mutan evento_dead_letter fuera de "
@@ -113,27 +116,48 @@ def test_solo_transition_status_y_purge_mutan_la_dlq(svc: str) -> None:
         )
 
 
-@pytest.mark.parametrize("svc", DLQ)
-def test_quien_transiciona_antes_bloquea_con_el_gate(svc: str) -> None:
-    """Todo llamador de `transition_status` pide antes `get_for_update` (lectura con gate)."""
+def _llamadas(fn) -> set[str]:
     import ast
 
-    visto = 0
-    pkg = paquete_de(SERVICIOS / svc)
-    assert pkg is not None, svc
-    for fuente in (pkg / "routers").rglob("*.py"):
-        for fn in ast.walk(ast.parse(fuente.read_text())):
-            if not isinstance(fn, ast.AsyncFunctionDef):
-                continue
-            llamadas = [
-                n.func.attr
-                for n in ast.walk(fn)
-                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-            ]
-            if "transition_status" in llamadas:
-                visto += 1
-                assert "get_for_update" in llamadas, f"{fuente.name}::{fn.name}"
-    assert visto >= 2, "anti-vacuidad: replay y descarte"
+    nombres: set[str] = set()
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call):
+            if isinstance(n.func, ast.Attribute):
+                nombres.add(n.func.attr)
+            elif isinstance(n.func, ast.Name):
+                nombres.add(n.func.id)
+    return nombres
+
+
+def test_quien_transiciona_antes_bloquea_con_el_gate() -> None:
+    """En la consola, `transition_status` solo lo llama `_cerrar`, y todo endpoint que
+    cierra bloquea antes con `_bloquear`, que es `get_for_update` (lectura con gate)."""
+    import ast
+
+    funciones = {
+        fn.name: fn
+        for fn in ast.walk(ast.parse(CONSOLA.read_text()))
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    transicionan = sorted(n for n, fn in funciones.items() if "transition_status" in _llamadas(fn))
+    assert transicionan == ["_cerrar"], transicionan
+    assert "get_for_update" in _llamadas(funciones["_bloquear"])
+    cierran = [n for n, fn in funciones.items() if "_cerrar" in _llamadas(fn)]
+    assert len(cierran) >= 2, "anti-vacuidad: replay y descarte"
+    for nombre in cierran:
+        assert "_bloquear" in _llamadas(funciones[nombre]), nombre
+
+
+def test_no_vuelven_las_copias_por_dominio() -> None:
+    """ADR-049 §4: una implementación. Un repositorio, una retención o una consola de
+    dead-letter dentro de un dominio es la copia que se acaba de retirar."""
+    copias = sorted(
+        str(p.relative_to(RAIZ))
+        for nombre in ("dead_letter_repository.py", "deadletter_retention.py", "admin_deadletter.py")
+        for p in APP.glob(f"*/*/{nombre}")
+        if p != CONSOLA
+    )
+    assert not copias, copias
 
 
 def test_el_detector_ve_una_mutacion_ajena_a_la_lista() -> None:

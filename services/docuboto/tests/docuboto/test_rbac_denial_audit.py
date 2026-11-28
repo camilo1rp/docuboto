@@ -11,7 +11,8 @@
 
 ``require_permission`` levanta el 403 antes de que la lógica de negocio (y su
 propia llamada a ``audit.append``) se ejecute — sin este seguimiento, ninguna
-denegación de permiso queda registrada en ``audit_log``. Cubre:
+denegación de permiso queda registrada en ``audit_log``. Se prueba sobre la consola
+del dead-letter, que exige persona (``require_actor_permission``). Cubre:
   (a) un usuario IDENTIFICADO con tenant válido → SÍ se audita.
   (b) una petición SIN identidad (sin X-User-Id → 401 vía ``get_actor``, que se
       resuelve ANTES de ``check_permission``) → NO se audita (regla anti-ruido).
@@ -25,7 +26,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from tests.notification.conftest import TENANT_HEADERS, USER
+from tests.docuboto.test_dead_letter_admin import HEADERS as TENANT_HEADERS
+from tests.docuboto.test_dead_letter_admin import (
+    USER,
+    cliente,  # noqa: F401 — fixture
+)
 
 
 def _audit_insert_calls(mock_conn: AsyncMock) -> list:
@@ -38,13 +43,13 @@ def _audit_insert_calls(mock_conn: AsyncMock) -> list:
 
 @pytest.mark.asyncio
 async def test_denial_of_identified_user_is_audited(
-    client_with_conn: tuple[AsyncClient, AsyncMock],
+    cliente: tuple[AsyncClient, AsyncMock],  # noqa: F811
 ) -> None:
-    client, mock_conn = client_with_conn
+    client, mock_conn = cliente
     mock_conn.fetchval.return_value = False  # check_permission → denegado
 
     response = await client.get(
-        "/api/v1/notification/admin/deadletter/",
+        "/api/v1/admin/deadletter/notification/",
         headers=TENANT_HEADERS,
     )
 
@@ -64,16 +69,16 @@ async def test_denial_of_identified_user_is_audited(
 
 @pytest.mark.asyncio
 async def test_denial_without_identity_is_not_audited(
-    client_with_conn: tuple[AsyncClient, AsyncMock],
+    cliente: tuple[AsyncClient, AsyncMock],  # noqa: F811
 ) -> None:
     """Sin X-User-Id, ``get_actor`` devuelve 401 antes de llegar a
     ``check_permission`` — no hay caso anónimo que audite el gate de permiso
     (no es una sonda que la auditoría deba registrar)."""
-    client, mock_conn = client_with_conn
+    client, mock_conn = cliente
     mock_conn.fetchval.return_value = True  # aunque "hubiera" permiso, sin identidad no aplica
 
     response = await client.get(
-        "/api/v1/notification/admin/deadletter/",
+        "/api/v1/admin/deadletter/notification/",
         headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]},
     )
 
@@ -83,11 +88,11 @@ async def test_denial_without_identity_is_not_audited(
 
 @pytest.mark.asyncio
 async def test_denial_survives_audit_failure(
-    client_with_conn: tuple[AsyncClient, AsyncMock],
+    cliente: tuple[AsyncClient, AsyncMock],  # noqa: F811
 ) -> None:
     """Best-effort real: si append_denial explota, la respuesta sigue siendo 403,
     nunca 500."""
-    client, mock_conn = client_with_conn
+    client, mock_conn = cliente
     mock_conn.fetchval.return_value = False  # check_permission → denegado
 
     with patch(
@@ -95,7 +100,7 @@ async def test_denial_survives_audit_failure(
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.get(
-            "/api/v1/notification/admin/deadletter/",
+            "/api/v1/admin/deadletter/notification/",
             headers=TENANT_HEADERS,
         )
 
