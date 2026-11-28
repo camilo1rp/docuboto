@@ -26,7 +26,10 @@ from docuboto.config import archive as settings
 from tests.archive.conftest import TENANT_HEADERS, make_expediente_record, make_radicado_link_record
 from tests.archive.test_transferencias import _indice_row, _transfer_row
 
-HOY = datetime.now(tz=UTC).date()
+# «Hoy» con el mismo reloj que el validador de `ExpedienteCreate` (`date.today()`,
+# zona del proceso). Con la fecha UTC, un host en Bogotá después de las 19:00
+# veía «hoy» como mañana y el test caía como si la fecha fuera futura.
+HOY = date.today()
 
 
 def _fondo(extrema: date) -> dict:
