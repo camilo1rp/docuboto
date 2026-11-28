@@ -242,7 +242,7 @@ class SondeoDeCorreo:
                     es_admin=True,
                     password=None,
                     datos=datos,
-                    servicio=DocumentService(conn, self._tenant, self._tenant_client, None),
+                    servicio=DocumentService(conn, self._tenant, self._tenant_client),
                 )
             except ErrorDeCuenta as exc:
                 # Un correo que no se puede radicar no detiene a los demás: queda

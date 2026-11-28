@@ -91,7 +91,7 @@ CREATE TABLE ppi_nonces (
     CONSTRAINT ppi_nonces_pkey PRIMARY KEY (nonce)
 );
 
-COMMENT ON TABLE ppi_nonces IS 'PPI return-path nonces (one-use). Replaces Redis orpycamcp:ppi:nonce:*.';
+COMMENT ON TABLE ppi_nonces IS 'PPI return-path nonces (one-use).';
 
 CREATE INDEX ix_ppi_nonces_expira ON ppi_nonces USING btree (expira_at);
 

@@ -35,7 +35,7 @@ from fastapi import (
 from orpycamcp_common.tenant import slug_valido
 from orpycamcp_common.usuario import ip_de
 
-from document.core.dependencies import get_public_tenant_conn, get_redis, get_tenant_client
+from document.core.dependencies import get_public_tenant_conn, get_tenant_client
 from document.schemas.public import (
     IDEMPOTENCY_KEY_RE,
     PoliticaTratamiento,
@@ -99,11 +99,10 @@ async def radicar_pqrs(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     conn: asyncpg.Connection = Depends(get_public_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
 ) -> PqrsResponse:
     clave = _clave_idempotencia(idempotency_key)
     try:
-        service = DocumentService(conn, tenant, tenant_client, redis)
+        service = DocumentService(conn, tenant, tenant_client)
     except InvalidTenantError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -137,7 +136,7 @@ async def radicar_pqrs(
         politica_version=payload.politica_version,
         altcha=payload.altcha,
     )
-    respuesta = await VentanillaService(conn, tenant, tenant_client, redis).radicar(
+    respuesta = await VentanillaService(conn, tenant, tenant_client).radicar(
         ventanilla,
         service,
         idempotency_key=clave,
@@ -256,7 +255,7 @@ async def politica_de_ventanilla(
 async def reto_de_ventanilla(tenant: str, response: Response) -> RetoAntirrobots:
     """Entrega un reto de prueba de trabajo ya firmado (C16, ADR-038).
 
-    **Sin base de datos y sin Redis**: emitir es puro cálculo y no escribe nada
+    **Sin base de datos**: emitir es puro cálculo y no escribe nada
     que un anónimo pueda amplificar. El reto queda atado a la entidad de la ruta
     (`t` en el `salt`) y vence a los `ALTCHA_TTL_SEGUNDOS`. Se consume —un solo
     uso— al radicar, no al emitirlo. Cae en el cubo anónimo general del gateway,
@@ -284,7 +283,6 @@ async def estado_de_ventanilla(
     tenant: str,
     conn: asyncpg.Connection = Depends(get_public_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
 ) -> VentanillaEstado:
     """Comprueba, sin radicar, lo que `POST /ventanilla` exige por dentro.
 
@@ -292,7 +290,7 @@ async def estado_de_ventanilla(
     (ADR-035). Suspendida: `503 canal_no_disponible` + `Retry-After` (la ventanilla
     es una escritura pública y está cerrada; quien consulta merece saberlo).
     """
-    return await VentanillaService(conn, tenant, tenant_client, redis).estado()
+    return await VentanillaService(conn, tenant, tenant_client).estado()
 
 
 @router.post(
@@ -316,7 +314,6 @@ async def radicar_en_ventanilla(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     conn: asyncpg.Connection = Depends(get_public_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
 ) -> VentanillaRespuesta:
     """La puerta por la que entra la correspondencia externa de la entidad.
 
@@ -405,13 +402,13 @@ async def radicar_en_ventanilla(
         raise _rechazar(str(exc)) from exc
 
     try:
-        service = DocumentService(conn, tenant, tenant_client, redis)
+        service = DocumentService(conn, tenant, tenant_client)
     except InvalidTenantError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
         )
-    return await VentanillaService(conn, tenant, tenant_client, redis).radicar(
+    return await VentanillaService(conn, tenant, tenant_client).radicar(
         payload,
         service,
         ficheros,

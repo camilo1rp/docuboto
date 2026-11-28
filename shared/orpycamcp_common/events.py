@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Sobre canónico de eventos sobre Redis Streams (00-contrato-eventos.md, ADR-010).
+"""Sobre canónico de eventos y su bus en PostgreSQL (00-contrato-eventos.md, ADR-010, ADR-049).
 
 Todos los servicios publican y consumen con el **mismo sobre**, de modo que ningún
 servicio reinvente el formato. Campos del sobre:
@@ -22,10 +22,15 @@ servicio reinvente el formato. Campos del sobre:
     dedup_key       clave de deduplicación lógica (negocio)
     payload         dict con los datos específicos del evento
 
-En Redis Streams los campos se almacenan planos; ``payload`` viaja como JSON.
-Esta librería ofrece construir/serializar/parsear el sobre y helpers de grupo de
-consumidores. El **loop** de consumo (con su tabla de idempotencia) lo arma cada
-servicio, porque la idempotencia persistente vive en su propio schema.
+El sobre se guarda PLANO y FIRMADO (``to_fields``) en la tabla ``eventos`` del
+schema de la entidad, en la MISMA transacción que el cambio de dominio (ADR-049):
+si la transacción revierte, el evento no existe, y no hay outbox que reenviar.
+
+Cada grupo consumidor toma eventos insertando su fila en ``evento_entregas``
+(``ON CONFLICT DO NOTHING``: dos consumidores del mismo grupo nunca toman el
+mismo) y los confirma fijando ``confirmado_en``. Lo tomado y sin confirmar es el
+equivalente de las entregas pendientes de un broker, y :func:`reclaim_stale` lo reintenta o lo aparca.
+El bucle que recorre las entidades vive en ``docuboto.core.bus``.
 """
 
 from __future__ import annotations
@@ -36,7 +41,6 @@ import hmac
 import json
 import logging
 import os
-import socket
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -45,8 +49,13 @@ from typing import Any
 
 from orpycamcp_common.request_log import canal_de_fondo
 
-# redis.asyncio.Redis — tipado laxo para no acoplar la firma al cliente concreto.
-Redis = Any
+# asyncpg.Connection — tipado laxo: la librería compartida no importa asyncpg.
+Conn = Any
+
+#: Canal de `NOTIFY` que despierta a los consumidores. Lleva el slug de la
+#: entidad, NUNCA el evento: el límite de 8.000 bytes de `NOTIFY` rompería un
+#: sobre grande en silencio (ADR-049).
+CANAL = "eventos"
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +98,7 @@ def build_event(
 #
 # Un sobre sin firma es una orden anónima. Los cuatro consumidores toman el
 # `tenant_slug` DEL PROPIO SOBRE y lo usan para elegir el schema sobre el que
-# escriben, así que quien pueda hacer `XADD` actúa como si fuera el productor
+# escriben, así que quien pueda insertar en el bus actúa como si fuera el productor
 # legítimo, para cualquier entidad alojada, sin pasar por el gateway ni por
 # ningún token: publicar una reclasificación a la baja bastaba para bajar de
 # nivel un radicado reservado de otra entidad.
@@ -162,7 +171,7 @@ def verificar_campos(campos: dict[str, str]) -> None:
 
 
 def to_fields(event: dict[str, Any]) -> dict[str, str]:
-    """Aplana el sobre a campos string para ``XADD`` (Redis Streams).
+    """Aplana el sobre a campos string: la forma que se guarda en ``eventos.sobre``.
 
     Los campos salen FIRMADOS si el despliegue tiene secreto de eventos: es el
     paso único por el que pasa todo productor.
@@ -182,9 +191,9 @@ def to_fields(event: dict[str, Any]) -> dict[str, str]:
 
 
 def parse_fields(fields: dict[Any, Any]) -> dict[str, Any]:
-    """Reconstruye el sobre desde los campos de un mensaje de stream.
+    """Reconstruye y VERIFICA el sobre desde sus campos planos.
 
-    Tolera claves/valores en ``bytes`` (cliente sin ``decode_responses``) o ``str``.
+    Tolera claves/valores en ``bytes`` o ``str``.
     """
 
     def _d(v: Any) -> str:
@@ -205,91 +214,195 @@ def parse_fields(fields: dict[Any, Any]) -> dict[str, Any]:
     }
 
 
-async def publish(redis: Redis, stream: str, event: dict[str, Any]) -> str:
-    """Publica el sobre en ``stream`` (XADD). Devuelve el id del mensaje."""
-    msg_id = await redis.xadd(stream, to_fields(event))
-    return msg_id.decode() if isinstance(msg_id, bytes | bytearray) else msg_id
+def _campos(sobre: Any) -> dict[str, str]:
+    """`eventos.sobre` llega como texto JSON o ya decodificado, según el códec."""
+    return json.loads(sobre) if isinstance(sobre, str | bytes | bytearray) else dict(sobre)
+
+
+async def reloj_bd(conn: Conn) -> datetime:
+    """Instante del reloj de LA BASE (``clock_timestamp()``), en la transacción en curso.
+
+    Un solo reloj para todas las réplicas: dos reclasificaciones del mismo
+    radicado quedan ordenadas como ocurrieron, aunque los procesos tengan el
+    reloj desviado.
+    """
+    instante: datetime = await conn.fetchval("SELECT clock_timestamp()")
+    return instante
+
+
+async def publish(conn: Conn, stream: str, event: dict[str, Any]) -> int:
+    """Publica el sobre en ``stream`` sobre la conexión del llamante. Devuelve el `seq`.
+
+    Va en la transacción que tenga abierta ``conn``: es lo que hace que el evento
+    y el hecho sean el mismo commit. El `NOTIFY` también es transaccional —sale
+    al confirmar, y no sale si se revierte—, así que nunca despierta a nadie por
+    un evento que no existe.
+    """
+    seq = await conn.fetchval(
+        "INSERT INTO eventos (stream, event_id, sobre) VALUES ($1, $2, $3::jsonb) RETURNING seq",
+        stream,
+        str(event["event_id"]),
+        json.dumps(to_fields(event)),
+    )
+    await conn.execute("SELECT pg_notify($1, $2)", CANAL, str(event["tenant_slug"]))
+    return int(seq)
 
 
 async def emit(
-    redis: Redis,
+    conn: Conn,
     stream: str,
     event_type: str,
     *,
     tenant_slug: str,
     payload: dict[str, Any] | None = None,
     **envelope: Any,
-) -> tuple[str, dict[str, Any]]:
-    """Atajo: construye y publica. Devuelve ``(msg_id, event)``."""
+) -> dict[str, Any]:
+    """Atajo: construye y publica. Devuelve el sobre.
+
+    `occurred_at` sale del reloj de LA BASE (`clock_timestamp()`) salvo que el
+    llamante lo dé: el instante del hecho es el de la transacción que lo
+    escribe, no el de un proceso con el reloj desviado (T13).
+    """
+    if "occurred_at" not in envelope:
+        envelope["occurred_at"] = (await reloj_bd(conn)).astimezone(UTC).isoformat()
     event = build_event(event_type, tenant_slug=tenant_slug, payload=payload, **envelope)
-    msg_id = await publish(redis, stream, event)
-    return msg_id, event
+    await publish(conn, stream, event)
+    return event
 
 
-async def ensure_group(redis: Redis, stream: str, group: str) -> None:
-    """Crea el grupo de consumidores (idempotente, ``MKSTREAM``).
+async def leer(
+    conn: Conn, group: str, streams: list[str] | tuple[str, ...], *, limite: int = 10
+) -> list[tuple[str, dict[str, str]]]:
+    """Toma hasta ``limite`` eventos que ``group`` no ha tomado aún, en orden de `seq`.
 
-    Ignora el error ``BUSYGROUP`` si el grupo ya existe.
+    Tomarlos es insertar su fila en ``evento_entregas``; ``ON CONFLICT DO
+    NOTHING`` hace que dos consumidores del mismo grupo no tomen el mismo
+    evento. Devuelve ``[(event_id, campos_planos)]`` — los campos tal como los
+    espera ``parse_fields``, que es quien verifica la firma.
+
+    No hay cursor por `seq` a propósito: los `seq` se reparten antes del commit,
+    así que una transacción que confirma tarde con un `seq` menor quedaría
+    detrás de un cursor que ya pasó, y su evento no se entregaría nunca.
     """
-    try:
-        await redis.xgroup_create(stream, group, id="0", mkstream=True)
-    except Exception as exc:  # redis.exceptions.ResponseError (BUSYGROUP)
-        if "BUSYGROUP" not in str(exc):
-            raise
+    filas = await conn.fetch(
+        """
+        WITH candidatos AS (
+            SELECT e.seq, e.event_id
+              FROM eventos e
+             WHERE e.stream = ANY($2::text[])
+               AND NOT EXISTS (
+                   SELECT 1 FROM evento_entregas d
+                    WHERE d.group_name = $1 AND d.event_id = e.event_id)
+             ORDER BY e.seq
+             LIMIT $3
+        ), tomados AS (
+            INSERT INTO evento_entregas (group_name, event_id, seq)
+            SELECT $1, event_id, seq FROM candidatos
+            ON CONFLICT DO NOTHING
+            RETURNING event_id, seq
+        )
+        SELECT e.event_id, e.sobre
+          FROM eventos e JOIN tomados t ON t.event_id = e.event_id
+         ORDER BY t.seq
+        """,
+        group,
+        list(streams),
+        limite,
+    )
+    return [(f["event_id"], _campos(f["sobre"])) for f in filas]
 
 
-def consumer_name(service: str) -> str:
-    """Nombre de consumidor por réplica: ``{servicio}-{HOSTNAME}``.
+async def ack(conn: Conn, group: str, event_id: str) -> None:
+    """Confirma la entrega: el grupo no lo vuelve a ver y se olvida su último error."""
+    await conn.execute(
+        "UPDATE evento_entregas SET confirmado_en = now() "
+        "WHERE group_name = $1 AND event_id = $2",
+        group,
+        event_id,
+    )
+    await conn.execute(
+        "DELETE FROM evento_ultimo_error WHERE group_name = $1 AND event_id = $2",
+        group,
+        event_id,
+    )
 
-    Un nombre fijo (``servicio-1``) hace que con varias réplicas todas aparezcan
-    como el MISMO consumidor en ``XINFO``/``XPENDING``: no se distingue quién
-    tiene qué mensaje y la reclamación entre réplicas se vuelve un no-op. En
-    Docker/Kubernetes ``HOSTNAME`` es único por contenedor/pod.
-    """
-    host = os.environ.get("HOSTNAME") or socket.gethostname()
-    return f"{service}-{host}"
 
-
-#: Vida del último error por mensaje (segundos): mucho más que el horizonte de
-#: reclamación (minutos), mucho menos que la DLQ de Redis.
+#: Vida del último error por entrega: mucho más que el horizonte de
+#: reclamación (minutos); se purga con :func:`purgar`.
 LASTERR_TTL_SECONDS = 24 * 3600
 LASTERR_DESCONOCIDO = "desconocido: sin intento en este barrido"
 
 
-def _lasterr_key(group: str) -> str:
-    return f"orpycamcp:{group}:lasterr"
+async def record_failure(conn: Conn, group: str, event_id: str, exc: BaseException) -> None:
+    """Recuerda el último error de una entrega (R-5b).
 
-
-async def record_failure(redis: Redis, group: str, msg_id: str, exc: BaseException) -> None:
-    """Recuerda el último error de un mensaje (R-5b).
-
-    Sin esto, un mensaje que muere entre el XCLAIM y el handler llega a la rama
-    «huérfana» de :func:`reclaim_stale` sin intento fresco y se aparca con
-    ``last_error`` vacío. Best-effort: nunca rompe el bucle del consumidor.
+    Sin esto, una entrega que muere sin intento fresco llega a la rama
+    «huérfana» de :func:`reclaim_stale` y se aparcaría con ``last_error`` vacío.
+    Best-effort: nunca rompe el bucle del consumidor.
     """
     try:
-        key = _lasterr_key(group)
-        await redis.hset(key, msg_id, f"{type(exc).__name__}: {exc}"[:500])
-        await redis.expire(key, LASTERR_TTL_SECONDS)
+        await conn.execute(
+            """
+            INSERT INTO evento_ultimo_error (group_name, event_id, mensaje)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (group_name, event_id)
+            DO UPDATE SET mensaje = EXCLUDED.mensaje, ocurrido_en = now()
+            """,
+            group,
+            event_id,
+            f"{type(exc).__name__}: {exc}"[:500],
+        )
     except Exception:
-        logger.debug("No se pudo registrar el último error de %s", msg_id, exc_info=True)
+        logger.debug("No se pudo registrar el último error de %s", event_id, exc_info=True)
 
 
-async def _recall_failure(redis: Redis, group: str, msg_id: str) -> str:
+async def _recall_failure(conn: Conn, group: str, event_id: str) -> str:
     try:
-        value = await redis.hget(_lasterr_key(group), msg_id)
+        valor = await conn.fetchval(
+            "SELECT mensaje FROM evento_ultimo_error WHERE group_name = $1 AND event_id = $2",
+            group,
+            event_id,
+        )
     except Exception:
         return LASTERR_DESCONOCIDO
-    if isinstance(value, bytes | bytearray):
-        value = value.decode(errors="replace")
-    return value if isinstance(value, str) and value else LASTERR_DESCONOCIDO
+    return valor if isinstance(valor, str) and valor else LASTERR_DESCONOCIDO
 
 
-async def _forget_failure(redis: Redis, group: str, msg_id: str) -> None:
-    try:
-        await redis.hdel(_lasterr_key(group), msg_id)
-    except Exception:
-        logger.debug("No se pudo olvidar el último error de %s", msg_id, exc_info=True)
+async def purgar(conn: Conn, *, dias: int) -> int:
+    """Borra los eventos de más de ``dias`` días que ningún grupo tiene sin confirmar.
+
+    Eventos y entregas se purgan JUNTOS y con la misma política: la
+    deduplicación de un grupo es su fila en ``evento_entregas``, así que borrar
+    la entrega y dejar el evento lo haría reprocesar (ADR-049, «la ventana de
+    la deduplicación se ata a la purga»). Lo que un grupo tiene sin confirmar no
+    se borra: está en reclamación o camino del dead-letter.
+
+    Es también la caducidad de los datos personales que viajan en el sobre:
+    la ventana es la misma para todas las entidades, sea cual sea su volumen.
+    """
+    borrados = await conn.fetchval(
+        """
+        WITH viejos AS (
+            SELECT e.event_id FROM eventos e
+             WHERE e.publicado_en < now() - make_interval(days => $1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM evento_entregas d
+                    WHERE d.event_id = e.event_id AND d.confirmado_en IS NULL)
+        ), entregas AS (
+            DELETE FROM evento_entregas WHERE event_id IN (SELECT event_id FROM viejos)
+        ), borrados AS (
+            DELETE FROM eventos WHERE event_id IN (SELECT event_id FROM viejos)
+            RETURNING 1
+        )
+        SELECT count(*) FROM borrados
+        """,
+        dias,
+    )
+    await conn.execute(
+        "DELETE FROM evento_ultimo_error WHERE ocurrido_en < now() - make_interval(secs => $1)",
+        LASTERR_TTL_SECONDS,
+    )
+    return int(borrados or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -365,32 +478,18 @@ def spawn_supervised(
 ) -> asyncio.Task:
     """Lanza un consumidor bajo supervisión, en vez de con `create_task` a pelo.
 
-    **El problema.** Los cuatro consumidores del sistema se lanzaban así::
-
-        consumer_task = asyncio.create_task(document_consumer.run())
-
-    Ningún `done_callback`, ningún supervisor. Y `run()` llama a `ensure_group`
-    **antes** de entrar en su bucle, fuera de todo `try`: si Redis no está
-    disponible en ese instante —el arranque en frío del despliegue, donde el
-    contenedor de Redis puede tardar más que el del servicio, o un reinicio
-    posterior— la excepción sale de `run()` y **mata la tarea**. El proceso sigue
-    vivo, la API sigue respondiendo, el `/health` sigue en 200 y **nadie consume
-    nada**. asyncio solo emite «Task exception was never retrieved» cuando el
-    recolector de basura llega a la tarea, que puede ser mucho después o nunca.
-
-    Lo que se pierde en cada caso no es genérico: en workflow, la distribución
-    automática de la correspondencia entrante —los radicados se quedan en la
-    bandeja de quien radicó, sin repartir—; en notification, los correos que
-    nunca salen; en signature, el sellado; en knowledge, la ingesta que deja el
-    índice semántico congelado en el pasado. Todo en silencio y sin que ningún
-    reintento lo recupere, porque el consumidor ya no existe.
+    **El problema.** Un consumidor lanzado con `create_task` a pelo, sin
+    supervisor, muere en silencio si su primera consulta falla —el arranque en
+    frío, con la base todavía sin aceptar conexiones—: el proceso sigue vivo, la
+    API responde, `/health` sigue en 200 y **nadie consume nada**. Lo que se
+    pierde no es genérico: la distribución automática de la correspondencia
+    entrante, los correos que nunca salen, el sellado, la ingesta de
+    inteligencia.
 
     **La corrección.** El supervisor reejecuta la corrutina completa —no el
-    cuerpo del bucle—, de modo que `ensure_group` se vuelve a ejecutar en cada
-    reinicio: tras un parpadeo de Redis el grupo se restablece solo. La espera
-    crece exponencialmente hasta un minuto para no martillear un Redis caído, y
-    cada muerte se registra con `logger.exception`, que es lo que convierte un
-    fallo mudo en uno visible.
+    cuerpo del bucle— con espera exponencial hasta un minuto, y cada muerte se
+    registra con `logger.exception`, que es lo que convierte un fallo mudo en
+    uno visible.
 
     La cancelación (apagado del `lifespan`) se propaga sin reintentar: es la
     única salida legítima del bucle.
@@ -403,7 +502,7 @@ def spawn_supervised(
 
 
 # ---------------------------------------------------------------------------
-# Dead-letter / reclaim helpers
+# Reclamación y dead-letter
 # ---------------------------------------------------------------------------
 
 
@@ -417,149 +516,52 @@ class ReclaimStats:
     dead_lettered: int = 0
 
 
-async def trim_deadletter(redis: Redis, stream: str, *, max_age_ms: int) -> int:
-    """XTRIM the DLQ buffer stream by MINID, dropping entries older than max_age_ms.
-
-    Safe because the authoritative copy of every dead-letter lives in Postgres
-    (evento_dead_letter + audit_log); a Redis entry whose persistence failed is
-    re-dead-lettered within the reclaim window (minutes), far below max_age_ms,
-    so anything older than the cutoff is guaranteed already mirrored. That guarantee
-    holds PER GROUP only since the PK of ``evento_dead_letter`` became
-    ``(origin_group, event_id)`` (AREA-10-07): with a PK on ``event_id`` alone the second
-    group's copy was dropped silently and this trim erased its only trace.
-
-    Args:
-        redis:       Async Redis client.
-        stream:      DLQ stream name (e.g. ``"orpycamcp.signature.deadletter"``).
-        max_age_ms:  Horizon in milliseconds.  Entries with a Redis ID older than
-                     ``now - max_age_ms`` are eligible for removal.
-
-    Returns:
-        Number of entries removed (0 if Redis returned None or nothing to trim).
-    """
-    # Clamp to non-negative: an absurdly large max_age_ms (misconfig) would make the
-    # cutoff negative and the MINID invalid; floor at 0 → trims nothing (safe no-op).
-    cutoff_ms = max(0, int(datetime.now(UTC).timestamp() * 1000) - max_age_ms)
-    min_id = f"{cutoff_ms}-0"
-    trimmed = await redis.xtrim(stream, minid=min_id, approximate=True)
-    count = int(trimmed) if trimmed is not None else 0
-    logger.info(
-        "DLQ trim: stream=%s min_id=%s entries_removed=%d", stream, min_id, count
-    )
-    return count
-
-
-async def trim_stream(redis: Redis, stream: str, *, max_age_ms: int) -> int:
-    """Recorta un stream de DOMINIO por antigüedad. Gemelo de `trim_deadletter`.
-
-    Los streams de dominio se publicaban sin `maxlen`, sin caducidad y sin que
-    nadie los recortara nunca. El resultado era un almacén paralelo de datos
-    personales y de contenido documental —el asunto y el nombre del ciudadano de
-    cada radicación—, en claro, fuera del schema de la entidad, fuera de la Tabla
-    de Retención Documental que gobierna todo lo demás, y sin caducar jamás. Un
-    solo `XRANGE` devolvía el historial completo de radicaciones del despliegue.
-    Es la misma clase de exposición que el respaldo en claro, en otro sitio.
-
-    **Lo que esto NO arregla, y conviene tenerlo dicho**: reclasificar un
-    radicado hacia arriba no puede alcanzar la copia ya publicada en el stream.
-    Un registro de solo-anexar no se retracta. Lo que hace la caducidad es
-    acotar la VENTANA durante la cual esa copia existe, que es la mitigación
-    honesta; la otra mitad —no poner el contenido en el sobre— es un cambio de
-    contrato con los consumidores y queda declarado como pendiente.
-
-    El recorte es por antigüedad y no por número de entradas a propósito: con
-    `MAXLEN` la ventana depende del volumen del despliegue, así que una entidad
-    con mucho tráfico conservaría minutos y una tranquila, meses. Por tiempo la
-    promesa es la misma para todas.
-    """
-    cutoff_ms = max(0, int(datetime.now(UTC).timestamp() * 1000) - max_age_ms)
-    min_id = f"{cutoff_ms}-0"
-    trimmed = await redis.xtrim(stream, minid=min_id, approximate=True)
-    count = int(trimmed) if trimmed is not None else 0
-    logger.info(
-        "trim de stream de dominio: stream=%s min_id=%s entradas_eliminadas=%d",
-        stream,
-        min_id,
-        count,
-    )
-    return count
-
-
 async def reclaim_stale(
-    redis: Redis,
-    stream: str,
+    conn: Conn,
     group: str,
-    consumer: str,
     *,
     handler: Any,
-    min_idle_ms: int = 60_000,
+    min_idle_s: int = 60,
     max_deliveries: int = 5,
-    deadletter_stream: str,
     batch: int = 50,
     on_dead_letter: Any = None,
-    on_reclaim: Any = None,
     status_name: str | None = None,
+    consumer: str = "",
 ) -> ReclaimStats:
-    """Reclaims stale PEL entries and routes poison-pills to a dead-letter stream.
+    """Reintenta las entregas atascadas de ``group`` y aparca las envenenadas.
 
-    Strategy: XPENDING(IDLE) + XCLAIM instead of XAUTOCLAIM.  XAUTOCLAIM does
-    not expose the delivery counter; XPENDING with ``idle`` filters by idle time
-    without incrementing the counter, so we can inspect ``times_delivered``
-    before deciding whether to retry or dead-letter.
+    Una entrega está atascada si lleva más de ``min_idle_s`` sin confirmar. Se
+    reclama con ``FOR UPDATE SKIP LOCKED`` —dos barridos no reclaman la misma—
+    y la reclamación sube ``entregas``: equivale a ``XAUTOCLAIM``.
 
-    Cadence contract that callers must respect::
+    - Si ya había llegado a ``max_deliveries`` antes de esta reclamación, se
+      aparca sin intento nuevo, con el último error que dejó (R-5b).
+    - Si no, se reintenta con ``handler(campos)``. Si falla y con esta entrega
+      llega al tope, se aparca en el mismo barrido con el error fresco.
 
-        min_idle_ms (60 s) > reclaim_interval (e.g. 30 s) > block_timeout (5 s)
+    Aparcar es llamar a ``on_dead_letter(envelope, failure_meta)``, y **solo si
+    tiene éxito** se confirma la entrega (R-4, ADR-021): no hay dead-letter sin
+    rastro durable. Si falla, la entrega sigue pendiente y el próximo barrido la
+    vuelve a intentar.
 
-    This guarantees a healthy consumer actively processing a message for up to
-    55 s is never pre-empted.
+    Cadencia que los llamantes respetan: ``min_idle_s`` (60) > intervalo del
+    barrido (30) > espera del bucle (5), para no adelantarse a un consumidor
+    sano que aún está procesando.
 
-    All ``failure_meta`` values are ``str`` for Redis Streams field compatibility
-    (streams store everything as byte strings).
-
-    Args:
-        redis:             Async Redis client (``decode_responses=True`` recommended).
-        stream:            Source stream name.
-        group:             Consumer group name.
-        consumer:          Consumer name used for XCLAIM ownership transfer.
-        handler:           ``async (raw_fields: dict) -> None`` — the same handler
-                           used in the normal consumer loop.  Receives the raw
-                           field dict from XCLAIM (same format as XREADGROUP).
-        min_idle_ms:       Minimum idle time in ms before a message is considered
-                           stale.
-        max_deliveries:    Delivery threshold for dead-lettering (inclusive).
-        deadletter_stream: Stream where poison-pills are routed.
-        batch:             Maximum PEL entries to inspect per call.
-        on_dead_letter:    Optional ``async (envelope: dict, failure_meta: dict)
-                           -> None`` callback that durably records the dead-letter
-                           (e.g. Postgres + audit). It is awaited *after* the XADD
-                           buffer write but *before* the XACK, and its success
-                           **gates** the ack: if it raises, the original message is
-                           NOT acked (stays in the PEL for retry on the next sweep),
-                           so there is no dead-letter without a durable trace. When
-                           ``None``, the message is acked right after the XADD.
-        on_reclaim:        Optional ``async (msg_id: str) -> None`` callback,
-                           called after a successful XCLAIM (before handler).
-                           Errors are caught and logged.
-        status_name:       Nombre bajo el que el consumidor supervisado se
-                           publica en :func:`consumer_status`. Si se da, las
-                           estadísticas de cada barrido quedan visibles en
-                           ``/health/ready`` (13-12).
-
-    Returns:
-        :class:`ReclaimStats` with per-outcome counters.
+    ``conn`` llega con el ``search_path`` de la entidad y SIN transacción
+    abierta: la reclamación tiene que quedar confirmada antes de que el handler,
+    que abre sus propias conexiones, empiece.
     """
     stats = ReclaimStats()
     try:
         return await _reclaim_sweep(
-            redis, stream, group, consumer, stats,
-            handler=handler, min_idle_ms=min_idle_ms, max_deliveries=max_deliveries,
-            deadletter_stream=deadletter_stream, batch=batch,
-            on_dead_letter=on_dead_letter, on_reclaim=on_reclaim,
+            conn, group, stats,
+            handler=handler, min_idle_s=min_idle_s, max_deliveries=max_deliveries,
+            batch=batch, on_dead_letter=on_dead_letter, consumer=consumer,
         )
     finally:
         # `finally`: un barrido que revienta a medias también deja constancia de
-        # lo que alcanzó a hacer (p. ej. aparcó 2 mensajes antes del fallo).
+        # lo que alcanzó a hacer (p. ej. aparcó 2 entregas antes del fallo).
         _record_sweep(status_name, stats)
 
 
@@ -580,190 +582,131 @@ def _record_sweep(status_name: str | None, stats: ReclaimStats) -> None:
 
 
 async def _reclaim_sweep(
-    redis: Redis,
-    stream: str,
+    conn: Conn,
     group: str,
-    consumer: str,
     stats: ReclaimStats,
     *,
     handler: Any,
-    min_idle_ms: int,
+    min_idle_s: int,
     max_deliveries: int,
-    deadletter_stream: str,
     batch: int,
     on_dead_letter: Any,
-    on_reclaim: Any,
+    consumer: str,
 ) -> ReclaimStats:
-    # xpending_range returns list[dict] with keys:
-    #   message_id, consumer, time_since_delivered, times_delivered
-    # Using idle= filters to entries idle for at least min_idle_ms — these are
-    # the candidates a healthy consumer is no longer processing.
-    pending = await redis.xpending_range(
-        stream, group, min="-", max="+", count=batch, idle=min_idle_ms
+    reclamadas = await conn.fetch(
+        """
+        WITH atascadas AS (
+            SELECT group_name, event_id FROM evento_entregas
+             WHERE group_name = $1
+               AND confirmado_en IS NULL
+               AND reclamado_en < now() - make_interval(secs => $2)
+             ORDER BY seq
+             LIMIT $3
+             FOR UPDATE SKIP LOCKED
+        )
+        UPDATE evento_entregas d
+           SET reclamado_en = now(), entregas = d.entregas + 1
+          FROM atascadas a
+         WHERE d.group_name = a.group_name AND d.event_id = a.event_id
+        RETURNING d.event_id, d.entregas,
+                  (SELECT e.stream FROM eventos e WHERE e.event_id = d.event_id) AS stream,
+                  (SELECT e.sobre FROM eventos e WHERE e.event_id = d.event_id) AS sobre
+        """,
+        group,
+        min_idle_s,
+        batch,
     )
-    if not pending:
-        return stats
 
-    for entry in pending:
-        msg_id: str = entry["message_id"]
-        times_delivered: int = int(entry["times_delivered"])
+    for fila in reclamadas:
+        event_id: str = fila["event_id"]
+        entregas: int = int(fila["entregas"])
+        if fila["sobre"] is None:
+            # El evento ya no existe (purgado): no hay nada que reintentar.
+            await ack(conn, group, event_id)
+            continue
+        campos = _campos(fila["sobre"])
+        stream = fila["stream"]
 
-        if times_delivered >= max_deliveries:
-            # --- DEAD-LETTER (orphan at threshold, no fresh attempt this sweep) ---
-            # Transfer ownership first; if another consumer already acked it
-            # between XPENDING and XCLAIM, claimed will be empty (race).
-            claimed = await redis.xclaim(stream, group, consumer, min_idle_ms, [msg_id])
-            if not claimed:
-                continue  # race: already acked — nothing to do
-
-            _id, fields = claimed[0]
-            envelope = parse_fields(fields)
-
-            # All values are str — Redis Streams fields are byte strings.
-            # No fresh attempt was made in this sweep: the concrete error is the
-            # one recorded by the failure that left the message orphaned
-            # (`record_failure`), or an explicit marker if none was recorded —
-            # never an empty string (R-5b, ADR-021).
-            failure_meta: dict[str, str] = {
+        def _meta(cuenta: int, ultimo_error: str, _stream: str = stream) -> dict[str, str]:
+            return {
                 "dead_letter_reason": "max_deliveries_exceeded",
-                "dead_letter_origin_stream": stream,
+                "dead_letter_origin_stream": _stream,
                 "dead_letter_group": group,
-                "dead_letter_consumer": consumer,
-                "dead_letter_delivery_count": str(times_delivered),
+                "dead_letter_consumer": consumer or group,
+                "dead_letter_delivery_count": str(cuenta),
                 "dead_lettered_at": _now_iso(),
-                "dead_letter_last_error": await _recall_failure(redis, group, msg_id),
+                "dead_letter_last_error": ultimo_error,
             }
 
-            # Step 1: publish to dead-letter stream (best-effort operational buffer).
-            await redis.xadd(deadletter_stream, {**to_fields(envelope), **failure_meta})
+        if entregas - 1 >= max_deliveries:
+            # Huérfana en el tope: sin intento nuevo, con el error que dejó.
+            meta = _meta(entregas - 1, await _recall_failure(conn, group, event_id))
+            if await _aparcar(conn, group, event_id, campos, meta, on_dead_letter):
+                stats.dead_lettered += 1
+            continue
 
-            logger.error(
-                "Dead-lettered event after %d deliveries: event_id=%s tenant=%s "
-                "stream=%s group=%s msg_id=%s",
-                times_delivered,
-                envelope.get("event_id"),
-                envelope.get("tenant_slug"),
-                stream,
-                group,
-                msg_id,
-            )
-
-            # Step 2: durable persistence callback — gates the XACK (R-4).
-            # If on_dead_letter is None, fall through to XACK immediately (no
-            # durability requirement from this call site).
-            # If on_dead_letter raises, the message stays in the PEL for the
-            # next sweep: no dead-letter without a durable trace (R-4, ADR-021).
-            if on_dead_letter is not None:
-                try:
-                    await on_dead_letter(envelope, failure_meta)
-                except Exception:
-                    logger.warning(
-                        "on_dead_letter callback failed for msg_id=%s — "
-                        "message remains in PEL (R-4: no xack without durable trace)",
-                        msg_id,
-                        exc_info=True,
-                    )
-                    continue  # skip xack; next PEL entry
-
-            # Step 3: XACK only after durable trace is confirmed.
-            await redis.xack(stream, group, msg_id)
-            await _forget_failure(redis, group, msg_id)
-            stats.dead_lettered += 1
-
-        else:
-            # --- RECLAIM AND REPROCESS ---
-            claimed = await redis.xclaim(stream, group, consumer, min_idle_ms, [msg_id])
-            if not claimed:
-                continue  # race: already acked — nothing to do
-
-            stats.reclaimed += 1
-
-            if on_reclaim is not None:
-                try:
-                    await on_reclaim(msg_id)
-                except Exception:
-                    logger.warning(
-                        "on_reclaim callback failed for msg_id=%s — continuing",
-                        msg_id,
-                        exc_info=True,
-                    )
-
-            _id, fields = claimed[0]
-            try:
-                await handler(fields)
-                # A-1: ack ONLY on success — if handler fails the message stays
-                # in the PEL and will be retried on the next sweep.  Once
-                # times_delivered >= max_deliveries it is dead-lettered.
-                await redis.xack(stream, group, msg_id)
-                stats.reprocessed_ok += 1
-            except Exception as exc:
-                # Cap the captured error: verbose driver errors (e.g. asyncpg) could be
-                # large and might carry internal detail; the message lands in the (tenant-
-                # scoped) DLQ/audit trace, so bound it to keep the record tidy and avoid
-                # transporting unbounded internals.
-                last_error = str(exc)[:500]
-                await record_failure(redis, group, msg_id, exc)
-                # R-5b: XCLAIM already incremented the delivery counter internally.
-                # If the effective count (times_delivered + 1) reaches the threshold,
-                # dead-letter in this same sweep so the concrete last error is
-                # captured rather than waiting for the next XPENDING scan (which
-                # would land on the direct DL branch with dead_letter_last_error="").
-                effective_count = times_delivered + 1
-                if effective_count >= max_deliveries:
-                    envelope_dl = parse_fields(fields)
-                    failure_meta_dl: dict[str, str] = {
-                        "dead_letter_reason": "max_deliveries_exceeded",
-                        "dead_letter_origin_stream": stream,
-                        "dead_letter_group": group,
-                        "dead_letter_consumer": consumer,
-                        "dead_letter_delivery_count": str(effective_count),
-                        "dead_lettered_at": _now_iso(),
-                        "dead_letter_last_error": last_error,
-                    }
-                    # Step 1: publish to dead-letter stream (best-effort buffer).
-                    await redis.xadd(
-                        deadletter_stream,
-                        {**to_fields(envelope_dl), **failure_meta_dl},
-                    )
-                    logger.error(
-                        "Dead-lettered event after %d deliveries (fresh attempt failed): "
-                        "event_id=%s tenant=%s stream=%s group=%s msg_id=%s",
-                        effective_count,
-                        envelope_dl.get("event_id"),
-                        envelope_dl.get("tenant_slug"),
-                        stream,
-                        group,
-                        msg_id,
-                        exc_info=True,
-                    )
-                    # Step 2: durable persistence callback — gates the XACK (R-4).
-                    # Same contract as the direct-DL path above: callback failure
-                    # means no XACK; the message stays in PEL for the next sweep.
-                    _dl_committed = True
-                    if on_dead_letter is not None:
-                        try:
-                            await on_dead_letter(envelope_dl, failure_meta_dl)
-                        except Exception:
-                            logger.warning(
-                                "on_dead_letter callback failed for msg_id=%s — "
-                                "message remains in PEL (R-4: no xack without durable trace)",
-                                msg_id,
-                                exc_info=True,
-                            )
-                            _dl_committed = False
-                    # Step 3: XACK only after durable trace is confirmed.
-                    if _dl_committed:
-                        await redis.xack(stream, group, msg_id)
-                        await _forget_failure(redis, group, msg_id)
-                        stats.dead_lettered += 1
-                else:
-                    logger.warning(
-                        "Reprocess failed for msg_id=%s (times_delivered=%d) — "
-                        "message remains in PEL for future retry or dead-lettering",
-                        msg_id,
-                        times_delivered,
-                        exc_info=True,
-                    )
-                stats.reprocessed_fail += 1
+        stats.reclaimed += 1
+        try:
+            await handler(campos)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            stats.reprocessed_fail += 1
+            await record_failure(conn, group, event_id, exc)
+            if entregas >= max_deliveries:
+                meta = _meta(entregas, str(exc)[:500])
+                if await _aparcar(conn, group, event_id, campos, meta, on_dead_letter):
+                    stats.dead_lettered += 1
+            else:
+                logger.warning(
+                    "Reproceso fallido: event_id=%s group=%s entregas=%d — sigue pendiente",
+                    event_id,
+                    group,
+                    entregas,
+                    exc_info=True,
+                )
+            continue
+        await ack(conn, group, event_id)
+        stats.reprocessed_ok += 1
 
     return stats
+
+
+async def _aparcar(
+    conn: Conn,
+    group: str,
+    event_id: str,
+    campos: dict[str, str],
+    meta: dict[str, str],
+    on_dead_letter: Any,
+) -> bool:
+    """Lleva una entrega al dead-letter. Confirma SOLO si el rastro durable quedó."""
+    try:
+        envelope = parse_fields(campos)
+    except EventoNoAutentico:
+        # Un sobre sin firma válida no es de un productor: no se aparca como si
+        # lo fuera (la consola permitiría reproducirlo). Se confirma y se dice.
+        logger.error("Evento sin firma válida descartado: event_id=%s group=%s", event_id, group)
+        await ack(conn, group, event_id)
+        return False
+    logger.error(
+        "Dead-letter tras %s entregas: event_id=%s tenant=%s stream=%s group=%s",
+        meta["dead_letter_delivery_count"],
+        event_id,
+        envelope.get("tenant_slug"),
+        meta["dead_letter_origin_stream"],
+        group,
+    )
+    if on_dead_letter is not None:
+        try:
+            await on_dead_letter(envelope, meta)
+        except Exception:
+            logger.warning(
+                "on_dead_letter falló para event_id=%s — la entrega sigue pendiente "
+                "(R-4: no se confirma sin rastro durable)",
+                event_id,
+                exc_info=True,
+            )
+            return False
+    await ack(conn, group, event_id)
+    return True

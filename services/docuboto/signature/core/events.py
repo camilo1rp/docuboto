@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Publisher de eventos de firma sobre Redis Streams (E06, ADR-016, ADR-010).
+"""Publisher de eventos de firma sobre el bus en PostgreSQL (E06, ADR-016, ADR-010, ADR-049).
 
 signature-service ya CONSUME ``orpycamcp.document.events`` (ver
 ``app/workers/document_consumer.py``); este módulo es su primer PUBLISHER —
@@ -17,11 +17,9 @@ abajo (p. ej. que notification-service avise al responsable del expediente) es
 evolutivo; el Incremento 1 solo necesita la emisión, con fines de
 observabilidad/auditoría distribuida (ADR-010) y para dejar el enganche listo.
 
-Best-effort por diseño: la persistencia de la firma en `firma` (Postgres) ya
-se comprometió antes de llamar aquí — un fallo de Redis nunca debe revertir ni
-bloquear una firma ya persistida. El router captura cualquier excepción y solo
-registra un warning (mismo patrón que ``document-service`` en
-``_emit_created``).
+Cada función recibe la conexión del llamante y publica en SU transacción: el
+evento es una fila más del mismo commit que la firma, el challenge o el sello,
+así que existe si y solo si el hecho existe (ADR-049).
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ STREAM = "orpycamcp.signature.events"
 
 
 async def publish_challenge_emitido(
-    redis: Any,
+    conn: Any,
     *,
     tenant_slug: str,
     actor: str | None,
@@ -44,13 +42,10 @@ async def publish_challenge_emitido(
 ) -> None:
     """Emite ``firma.challenge.emitido`` (E06 Inc.2, RF-FIR-13, idempotente por challenge_id).
 
-    Best-effort — igual criterio que ``publish_indice_firmado``: el challenge ya
-    quedó persistido en Postgres y el correo ya se envió antes de llamar aquí; un
-    fallo de Redis no debe deshacer ninguna de las dos cosas. NUNCA incluye el OTP
-    ni su hash (invariante rector del Inc.2).
+    NUNCA incluye el OTP ni su hash (invariante rector del Inc.2).
     """
     await events.emit(
-        redis,
+        conn,
         STREAM,
         "firma.challenge.emitido",
         tenant_slug=tenant_slug,
@@ -66,7 +61,7 @@ async def publish_challenge_emitido(
 
 
 async def publish_indice_firmado(
-    redis: Any,
+    conn: Any,
     *,
     tenant_slug: str,
     actor: str | None,
@@ -80,7 +75,7 @@ async def publish_indice_firmado(
 ) -> None:
     """Emite ``firma.indice.firmado`` (idempotente por ``dedup_key=firma_id``)."""
     await events.emit(
-        redis,
+        conn,
         STREAM,
         "firma.indice.firmado",
         tenant_slug=tenant_slug,
@@ -99,7 +94,7 @@ async def publish_indice_firmado(
 
 
 async def publish_lta_renovada(
-    redis: Any,
+    conn: Any,
     *,
     tenant_slug: str,
     firma_id: str,
@@ -111,14 +106,12 @@ async def publish_lta_renovada(
     """Emite ``firma.lta_renovada`` (B10 §8) cuando un ``ArchiveTimeStamp`` renovado queda
     ``vigente`` (storage ya registró la herencia WORM). Idempotente por ``firma:ordinal``.
 
-    SEÑAL INFORMATIVA, SIN CONSUMIDOR POR DISEÑO (C-6, ADR-042): se emite best-effort y sin outbox, así
-    que un Redis caído la pierde para siempre; por eso nada depende de ella. archive-service concilia
-    por BARRIDO —compara el XML vigente de cada firma (``POST /internal/artefactos-vigentes``) con el
-    que embebe su AIP y reempaqueta la diferencia—, lo que además cubre el AIP empaquetado con el
-    original por un fallo transitorio, que ningún evento avisaría. El eslabón ya está comprometido; un
-    fallo de Redis no lo deshace."""
+    SEÑAL INFORMATIVA, SIN CONSUMIDOR POR DISEÑO (C-6, ADR-042): nada depende de ella. archive-service
+    concilia por BARRIDO —compara el XML vigente de cada firma (``POST /internal/artefactos-vigentes``)
+    con el que embebe su AIP y reempaqueta la diferencia—, lo que además cubre el AIP empaquetado con el
+    original por un fallo transitorio, que ningún evento avisaría."""
     await events.emit(
-        redis,
+        conn,
         STREAM,
         "firma.lta_renovada",
         tenant_slug=tenant_slug,

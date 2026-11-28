@@ -47,7 +47,7 @@ from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.rbac import check_permission
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.core.dependencies import get_redis, get_tenant_client
+from document.core.dependencies import get_tenant_client
 from document.schemas.email_cuenta import (
     AppOAuthCrear,
     AppOAuthResponse,
@@ -442,14 +442,13 @@ async def radicar_correo(
     mensaje_id: uuid.UUID,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
     cuerpo: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     """Convierte el correo en un radicado de Entrada con sus soportes."""
     slug = _tenant_slug(request)
     actor = _actor(request)
     try:
-        servicio = DocumentService(conn, slug, tenant_client, redis)
+        servicio = DocumentService(conn, slug, tenant_client)
     except InvalidTenantError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

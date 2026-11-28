@@ -9,42 +9,34 @@
 
 """Stream worker for notification-service (E16).
 
-Consumes two Redis Streams in a single XREADGROUP call:
+Consume dos streams del bus en PostgreSQL (`docuboto.core.bus`, ADR-049):
   - orpycamcp.workflow.events  → process_event
   - orpycamcp.document.events  → process_document_event
 
 Dead-letter / reclamación (R-4, ADR-021 Fase 3):
-  - A-1 (ack-only-on-success): XACK is called ONLY when the handler returns
-    without raising.  A handler failure leaves the message in the PEL; the
-    reclaim sweep (reclaim_stale) picks it up, retries, and after max_deliveries=5
-    escalates it to the dead-letter stream with a durable Postgres record.
-  - Periodic PEL reclaim sweep (cadence 30 s) called once per stream.
+  - A-1 (confirm-only-on-success): the delivery is confirmed ONLY when the
+    handler returns without raising.  A failure leaves it pending; the bus's
+    reclaim sweep retries it and after max_deliveries=5 parks it with a durable
+    Postgres record.
   - _persist_dead_letter: atomic Postgres write (evento_dead_letter + audit_log
     in the same transaction).  Transient errors propagate — no dead-letter without
     durable trace (closes R-4).
   - R1: events without tenant_slug → immutable trace under SYSTEM_TENANT in
-    public.audit_log; function returns normally so the helper can XACK.
+    public.audit_log; function returns normally so the helper can confirm.
 
-Cadence invariant:
-  min_idle_ms (60 s) > RECLAIM_INTERVAL (30 s) > block timeout (5 s)
+Cadence invariant (in `docuboto.core.bus`): min idle 60 s > reclaim 30 s > wait 5 s.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import time
-from collections.abc import Awaitable, Callable
-from typing import Any
 
-import redis.exceptions as redis_exc
-from orpycamcp_common import events
 from orpycamcp_common.database import acquire_tenant, get_pool
 
 from docuboto.config import notification as settings
+from docuboto.core import bus
 from notification.core.constants import DLQ_GROUP
-from notification.core.redis_client import get_redis
 from notification.jobs import deadletter_retention, retention
 from notification.repositories.dead_letter_repository import DeadLetterRepository
 from notification.services.event_consumer import process_document_event, process_event
@@ -61,36 +53,27 @@ logger = logging.getLogger(__name__)
 
 WORKFLOW_STREAM = "orpycamcp.workflow.events"
 DOCUMENT_STREAM = "orpycamcp.document.events"
-DEADLETTER_STREAM = "orpycamcp.notification.deadletter"
 # GROUP doubles as the origin_group written to (and filtered on) the shared
 # evento_dead_letter table (ADR-021 Fase 5 Inc.2) — sourced from
 # app.core.constants so the worker, the admin router, and the retention job can
 # never drift apart. See the module docstring in notification/core/constants.py.
 GROUP = DLQ_GROUP
-CONSUMER = events.consumer_name("notification-service")
 _SERVICE = "notification-service"
 
-# Cadence for the PEL reclaim sweep (seconds).
-# Contract: min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block timeout (5 s)
-# — ensures a healthy consumer processing a message for up to 55 s is never
-# pre-empted by this sweep.
-RECLAIM_INTERVAL = 30.0
-
-# Cadence for the dedup retention job (ADR-021 Fase 4 — MVP-1).
+# Cadence for the daily housekeeping (dedup retention + durable DLQ retention).
 # Read once at import time so tests can patch the module constant independently
 # of the settings singleton.
 RETENTION_INTERVAL: float = float(settings.retention_interval_seconds)
 
-# Each stream routes to its own handler.  The workflow stream uses the legacy
-# flat format; the document stream uses the canonical orpycamcp_common envelope.
-_HANDLERS: dict[str, Callable[[dict], Awaitable[None]]] = {
-    WORKFLOW_STREAM: process_event,
-    DOCUMENT_STREAM: process_document_event,
-}
 
-
-def _name(stream: object) -> str:
-    return stream.decode() if isinstance(stream, bytes | bytearray) else str(stream)
+async def _handle(data: dict[str, str]) -> None:
+    """Enruta por tipo de evento: los de flujo a `process_event`, el resto a
+    `process_document_event` (los dos verifican la firma del sobre)."""
+    tipo = data.get("event_type") or ""
+    if tipo.startswith("workflow."):
+        await process_event(data)
+    else:
+        await process_document_event(data)
 
 
 async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
@@ -99,8 +82,8 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
     Writes the dead-letter event atomically to ``evento_dead_letter`` (Postgres)
     and ``audit_log`` **inside a single transaction**.  The callback is passed to
     ``reclaim_stale`` as ``on_dead_letter``; under the R-4 contract the helper
-    gates the XACK on this callback's success: if this function raises, the message
-    stays in the PEL for the next sweep — there is no dead-letter without a durable
+    gates the confirmation on this callback's success: if this function raises, the
+    delivery stays pending in for the next sweep — there is no dead-letter without a durable
     trace.
 
     Edge case — permanently malformed event (no ``tenant_slug``) — R1:
@@ -108,19 +91,19 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
         infinite loop.  An immutable entry is written to ``public.audit_log`` under
         SYSTEM_TENANT so even the poison pill leaves a durable trace.  If that audit
         write fails (transient DB error), the exception propagates so the helper
-        skips the XACK and the message remains in the PEL for the next sweep.  After
+        does not confirm and the delivery stays pending for the next sweep.  After
         a successful audit (or if the audit module is unavailable), returns normally
-        so the helper can XACK.
+        so the helper can confirm.
 
     Idempotency:
         ``INSERT … ON CONFLICT (origin_group, event_id) DO NOTHING RETURNING event_id`` — a
         second call with the same ``event_id`` returns None (no row), and the
-        ``audit_log`` write is skipped.  This prevents a double-trace if XADD
-        succeeded but XACK failed (at-least-once redelivery).
+        ``audit_log`` write is skipped.  This prevents a double-trace if the insert
+        succeeded but the confirmation failed (at-least-once redelivery).
 
     Transient errors (DB down, pool exhausted, etc.):
         Exceptions are **not caught** here.  They propagate to the helper which
-        logs a warning and skips the XACK — the message remains in the PEL and
+        logs a warning and does not confirm — the delivery stays pending and
         will be retried on the next reclaim sweep.  This is what closes R-4.
 
     R-9: ``actor`` is ``"system"`` — the worker performs this act, not the
@@ -156,7 +139,7 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
                         "note": "evento sin tenant_slug; registrado bajo SYSTEM_TENANT",
                     },
                 )
-        # Return normally so the helper can XACK the poison pill — retrying an
+        # Return normally so the helper can confirm the poison pill — retrying an
         # event without tenant_slug would loop forever (no tenant schema to write to).
         return
 
@@ -207,7 +190,7 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
                 # erasing all trace. Raise inside the open transaction so the
                 # INSERT rolls back too; the exception then propagates out of
                 # this callback, which under the R-4/on_dead_letter contract
-                # makes the caller skip the XACK — the message stays in the PEL
+                # makes the caller not confirm — the delivery stays pending
                 # and is retried by the next reclaim sweep instead of being
                 # silently persisted (or acked) without a durable audit trace.
                 if not _AUDIT_AVAILABLE:
@@ -241,198 +224,35 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
                 )
 
 
-async def run() -> None:
-    """Long-running consumer loop.  Cancel to shut down cleanly.
+async def _mantenimiento_diario() -> None:
+    """Retención diaria: la tabla de dedup y los dead-letters terminales.
 
-    Normal processing path (A-1 — ack-only-on-success, ADR-021 Fase 3):
-      - XACK is called ONLY if the handler returned without raising.  A handler
-        failure (ValueError for missing event_id/tenant_slug; BD error in claim;
-        unhandled bug) leaves the message in the PEL (Pending Entries List).
-      - The reclaim sweep (reclaim_stale) picks up stale PEL entries, retries,
-        and after max_deliveries=5 escalates them to the dead-letter stream with
-        a durable Postgres record via _persist_dead_letter.
-      - CancelledError is always re-raised so the task shuts down cleanly.
-      - With insert-then-send dedup in the handlers, reprocesing a message that
-        was already claimed is safe: the dedup guard returns early without
-        re-triggering external effects.
-
-    Reclaim sweep (dead-letter, R-4 / ADR-021 Fase 3):
-      - Runs on cadence (RECLAIM_INTERVAL=30 s), called once per stream.
-      - A sweep failure logs a WARNING and does not crash the loop.
-
-    Cadence invariant: min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block (5 s).
+    Cada tarea con su try/except: un fallo no bloquea a la otra. La caducidad de
+    los eventos del bus ya no vive aquí: la hace el barrido para todas las
+    entidades (`events.purgar`, ADR-049).
     """
-    redis = get_redis()
+    try:
+        await retention.run_once()
+    except Exception:
+        logger.warning("Fallo en job de retención de dedup", exc_info=True)
+    try:
+        await deadletter_retention.run_once()
+    except Exception:
+        logger.warning("Fallo en job de retención del dead-letter durable", exc_info=True)
 
-    for stream in _HANDLERS:
-        await events.ensure_group(redis, stream, GROUP)
 
-    # Anotado con el tipo ANCHO que declara redis-py: `dict` es invariante,
-    # asi que un `dict[str, str]` inferido no encaja en el parametro aunque
-    # `str` sea uno de los tipos admitidos.
-    read_spec: dict[bytes | str | memoryview, int | bytes | str | memoryview] = {
-        stream: ">" for stream in _HANDLERS
-    }
+async def run() -> None:
+    """Bucle del grupo `notification-service` sobre el bus en PostgreSQL.
 
-    # Track cadence for both the PEL reclaim sweep and the retention job.
-    # A single time.monotonic() call initialises both: _last_reclaim = _last_retention = t0.
-    # This preserves the exact monotonic call count that existing tests rely on
-    # (one call before the loop, one inside per iteration).
-    # Retention first fires after RETENTION_INTERVAL seconds (≈24 h).  Deferring
-    # the first run avoids hitting the DB before the pool is warm; the daily window
-    # is negligible compared to the 7-day TTL.
-    _last_reclaim = _last_retention = time.monotonic()
-
-    # `Any` en el origen: redis-py declara la respuesta de `xreadgroup` como
-    # `ResponseT`, que en la practica es dinamica (su forma depende del modo
-    # decode del cliente). Declararlo UNA vez aqui evita ir acumulando
-    # supresiones sueltas en el desempaquetado del bucle de abajo.
-    messages: Any
-    while True:
-        try:
-            messages = await redis.xreadgroup(GROUP, CONSUMER, read_spec, count=10, block=5000)
-        except asyncio.CancelledError:
-            raise
-        except (TimeoutError, redis_exc.TimeoutError):
-            # Normal: block= expired with no new entries — not an error; resume immediately.
-            messages = []
-        except Exception:
-            logger.warning("Error en el bucle del worker de notificaciones", exc_info=True)
-            await asyncio.sleep(5)
-            messages = []
-
-        for stream, entries in messages or []:
-            stream_name = _name(stream)
-            handler = _HANDLERS.get(stream_name)
-            for msg_id, data in entries:
-                try:
-                    if handler is not None:
-                        await handler(data)
-                    # A-1: ack ONLY on success.  Reaches here only when handler
-                    # returned without raising (or when there is no handler for
-                    # the stream — unknown entries are acked to clear the PEL).
-                    await redis.xack(stream_name, GROUP, msg_id)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    # R-5b: recuerda el error para que, si el mensaje queda huérfano, el
-                    # dead-letter lleve la causa y no un texto vacío.
-                    await events.record_failure(redis, GROUP, msg_id, exc)
-                    # A-1: do NOT ack on failure.  The message stays in the PEL
-                    # and reclaim_stale will retry it; after max_deliveries it
-                    # escalates to the dead-letter stream with a durable record.
-                    # With insert-then-send dedup, retrying a message whose claim
-                    # already succeeded will hit the ON CONFLICT guard and skip
-                    # silently — safe even for non-idempotent effects.
-                    logger.warning(
-                        "Fallo procesando evento de notificación (stream=%s) — "
-                        "mensaje permanece en PEL para reintento",
-                        stream_name,
-                        exc_info=True,
-                    )
-
-        # Cadence gates — both share the same `now` snapshot (one monotonic call).
-        now = time.monotonic()
-
-        # PEL reclaim sweep: runs every RECLAIM_INTERVAL (30 s).
-        # Called once per stream so each PEL is inspected independently.
-        if now - _last_reclaim >= RECLAIM_INTERVAL:
-            for stream_name, handler in _HANDLERS.items():
-                try:
-                    await events.reclaim_stale(
-                        redis,
-                        stream_name,
-                        GROUP,
-                        CONSUMER,
-                        handler=handler,
-                        min_idle_ms=60_000,
-                        max_deliveries=5,
-                        deadletter_stream=DEADLETTER_STREAM,
-                        on_dead_letter=_persist_dead_letter,
-                        status_name="notification",
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    # A sweep failure must not crash the consumer loop.
-                    logger.warning(
-                        "Fallo en barrido de reclamación (stream=%s)", stream_name, exc_info=True
-                    )
-            _last_reclaim = now
-
-        # Daily retention gate: runs every RETENTION_INTERVAL (default 86 400 s / 24 h).
-        # Three tasks share this gate so they fire on the same daily cadence:
-        #   MVP-1 — purge notification_processed_events dedup table per tenant.
-        #   MVP-2 — XTRIM the DLQ buffer stream by MINID (ADR-021 Fase 4).
-        #   MVP-3 — purge terminal (resolved/discarded) evento_dead_letter rows
-        #           past their grace period (ADR-021 Fase 5 Inc.2).
-        # Each task has its own try/except so one failure never blocks the others.
-        if now - _last_retention >= RETENTION_INTERVAL:
-            # MVP-1: dedup TTL purge.
-            try:
-                await retention.run_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("Fallo en job de retención de dedup", exc_info=True)
-
-            # MVP-2: DLQ buffer trim.
-            # Safe: authoritative copy is in Postgres; entries older than the
-            # horizon are guaranteed already mirrored (ADR-021 Fase 4 MVP-2).
-            try:
-                await events.trim_deadletter(
-                    redis,
-                    DEADLETTER_STREAM,
-                    max_age_ms=settings.retention_dlq_days * 86_400_000,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("Fallo en trim del DLQ de notificaciones", exc_info=True)
-
-            # Caducidad de los streams de DOMINIO.
-            #
-            # Los de dead-letter ya se recortaban; los de dominio no los recortaba
-            # nadie. Y son los que llevan el contenido: el asunto y el nombre del
-            # ciudadano de cada radicación quedaban en claro, sin caducar, fuera
-            # del schema de la entidad y fuera de la Tabla de Retención Documental
-            # que gobierna todo lo demás. Un solo `XRANGE` devolvía el historial
-            # completo de radicaciones del despliegue.
-            #
-            # Va aquí, junto a los otros tres, porque comparte cadencia y porque
-            # este proceso ya es el que sabe recortar. Cada uno con su try/except:
-            # un fallo no puede bloquear a los demás.
-            #
-            # AVISO OPERATIVO: un consumidor detenido más tiempo que esta ventana
-            # pierde los eventos recortados. Por eso el valor por defecto es
-            # generoso y configurable, y por eso el recorte es por TIEMPO y no por
-            # número de entradas: con un tope de entradas la ventana dependería del
-            # volumen, y una entidad con mucho tráfico conservaría minutos.
-            for _stream_dominio in (DOCUMENT_STREAM, WORKFLOW_STREAM):
-                try:
-                    await events.trim_stream(
-                        redis,
-                        _stream_dominio,
-                        max_age_ms=settings.retention_streams_days * 86_400_000,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning(
-                        "Fallo en el recorte del stream %s", _stream_dominio, exc_info=True
-                    )
-
-            # MVP-3: evento_dead_letter terminal-row purge (ADR-021 Fase 5 Inc.2).
-            # 'pending' rows are never touched — this only prunes resolved/discarded
-            # rows past their grace period; independent of the two tasks above so a
-            # failure here never blocks (nor is blocked by) dedup purge or DLQ trim.
-            try:
-                await deadletter_retention.run_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning(
-                    "Fallo en job de retención del dead-letter durable", exc_info=True
-                )
-
-            _last_retention = now
+    Con el dedup insert-then-send, reintentar un evento cuyo claim ya se hizo da
+    en el ON CONFLICT y se salta en silencio: seguro aun con efectos externos.
+    """
+    await bus.consumir(
+        group=GROUP,
+        streams=(WORKFLOW_STREAM, DOCUMENT_STREAM),
+        handler=_handle,
+        on_dead_letter=_persist_dead_letter,
+        status_name="notification",
+        periodico=_mantenimiento_diario,
+        intervalo_periodico=RETENTION_INTERVAL,
+    )

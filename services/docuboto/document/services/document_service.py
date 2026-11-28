@@ -32,12 +32,13 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 from fastapi import HTTPException
-from orpycamcp_common import audit
+from orpycamcp_common import audit, events
 from orpycamcp_common.rbac import resolve_caller_clearance
 
 from docuboto.config import document as settings
 from document.api import abrir_flujo_si_hay
 from document.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, tope_reserva
+from document.core.constants import RECLASIFICADO, VENCIMIENTO_CAMBIADO
 from document.core.datos_minimos import exigir_o_422
 from document.core.dependencias import normalizar_dependencia
 from document.core.tipos import exigir_tipo_documental, plazo_por_defecto
@@ -61,7 +62,6 @@ from document.schemas.document import (
     IndiceClasificadosResponse,
 )
 from document.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
-from document.services import outbox
 from document.services.metadata_service import validate_metadata
 from document.services.tercero_service import TerceroService
 
@@ -230,7 +230,6 @@ class DocumentService:
         conn: asyncpg.Connection,
         tenant_slug: str,
         tenant_client: Any = None,
-        redis: Any | None = None,
     ) -> None:
         try:
             self._repo = DocumentRepository(conn, tenant_slug)
@@ -239,7 +238,6 @@ class DocumentService:
         self._conn = conn
         self._slug = tenant_slug
         self._tenant_client = tenant_client
-        self._redis = redis
         self._metadata_repo = MetadataRepository(conn)
 
     async def _rechazar_anexos_fuera_de_alcance(
@@ -569,19 +567,14 @@ class DocumentService:
                     provisionales_permitidas=provisionales,
                 )
 
-            # OUTBOX (AREA-09-05): el evento nace en la MISMA transacción que el
-            # radicado y su asiento. Antes se publicaba después del commit y un
-            # fallo de Redis lo perdía en silencio.
+            # El evento nace en la MISMA transacción que el radicado y su asiento
+            # (ADR-049): si la tx revierte, el evento no existe.
             payload_evento = self._payload_created(radicado)
             # Misma conexión: si la primera asignación falla, el consecutivo
-            # no se consume. En la imagen split el hook no está ligado y el
-            # consumidor Redis cubre ese despliegue. El envío del outbox sigue
-            # después del commit.
+            # no se consume. Sin el hook ligado, el consumidor de workflow cubre la
+            # distribución desde el evento.
             await abrir_flujo_si_hay(self._conn, self._slug, payload_evento)
-            pendiente = await self._encolar_created(radicado, actor, payload_evento)
-
-        # Camino rápido tras el commit; si falla, el relé del barrido lo reenvía.
-        await outbox.enviar(self._conn, self._redis, pendiente)
+            await self._encolar_created(radicado, actor, payload_evento)
 
         return _to_response(radicado)
 
@@ -611,7 +604,7 @@ class DocumentService:
         actor: str | None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return await outbox.encolar(
+        return await events.emit(
             self._conn,
             stream=_STREAM,
             event_type="document.radicado.created",
@@ -903,7 +896,7 @@ class DocumentService:
                 filename=filename,
                 file_size=file_size,
             )
-            pendiente = await outbox.encolar(
+            await events.emit(
                 self._conn,
                 stream=_STREAM,
                 event_type="document.anexo.added",
@@ -912,7 +905,6 @@ class DocumentService:
                 dedup_key=f"{radicado_id}:anexo:{file_id}",
                 payload={"id": str(radicado_id), "file_id": str(file_id)},
             )
-        await outbox.enviar(self._conn, self._redis, pendiente)
 
     async def list_anexos(
         self, document_id: uuid.UUID, max_clearance: int
@@ -1244,10 +1236,10 @@ class DocumentService:
                     "origen": origen,
                 },
             )
-            pendiente = await outbox.encolar(
+            await events.emit(
                 self._conn,
                 stream=_STREAM,
-                event_type=outbox.VENCIMIENTO_CAMBIADO,
+                event_type=VENCIMIENTO_CAMBIADO,
                 tenant_slug=self._slug,
                 actor=actor_str,
                 dedup_key=f"{fila['tracking_number']}:{nueva.isoformat()}:{str(sello)[:16]}",
@@ -1260,7 +1252,6 @@ class DocumentService:
                 },
             )
 
-        await outbox.enviar(self._conn, self._redis, pendiente)
         return {
             "id": fila["id"],
             "tracking_number": fila["tracking_number"],
@@ -1316,8 +1307,7 @@ class DocumentService:
           `document.radicado_remotivado`, sin evento: el acceso no cambia, y
           `clasificado_at` NO se reinicia).
 
-        El asiento y el UPDATE son atómicos, y el evento `reclassified` entra por
-        outbox en la misma transacción.
+        El asiento, el UPDATE y el evento `reclassified` van en la misma transacción.
         """
         actor_str = str(actor) if actor else None
 
@@ -1425,15 +1415,15 @@ class DocumentService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-            # OUTBOX (AREA-09-05): el evento se inserta en la MISMA transacción que el
+            # El evento (ADR-049) se inserta en la MISMA transacción que el
             # UPDATE del nivel y el asiento. knowledge-service deriva el nivel de sus
             # fragmentos SOLO de este evento: perderlo dejaba un 1→3 sirviéndose como
             # nivel 1. Si la tx revierte, el evento tampoco existe. `dedup_key` lleva el
             # sello del asiento: un ciclo 1→3→1→3 no repite clave.
-            pendiente = await outbox.encolar(
+            await events.emit(
                 self._conn,
                 stream=_STREAM,
-                event_type=outbox.RECLASIFICADO,
+                event_type=RECLASIFICADO,
                 tenant_slug=self._slug,
                 actor=actor_str,
                 dedup_key=f"{ctx['tracking_number']}:{nuevo_nivel}:{str(sello)[:16]}",
@@ -1447,10 +1437,6 @@ class DocumentService:
                     "plazo_reserva_meses": plazo_reserva_meses,
                 },
             )
-
-        # Camino rápido tras el commit. Si falla, la fila del outbox sigue pendiente y
-        # el relé del barrido la reenvía: el 1→3 ya no se pierde con Redis caído.
-        await outbox.enviar(self._conn, self._redis, pendiente)
 
         return {
             "id": ctx["id"],
@@ -1635,7 +1621,6 @@ class DocumentService:
         misma comprobación que hace `create`, y a propósito: un radicado retipificado
         tiene que ser indistinguible de uno radicado así desde el principio.
         """
-        pendiente = None
         async with self._conn.transaction():
             previo = await self._repo.get_by_id(document_id, max_clearance)
             if previo is None:
@@ -1738,7 +1723,7 @@ class DocumentService:
                 canal=audit.CANAL_PETICION,
             )
             if cambios:
-                pendiente = await outbox.encolar(
+                await events.emit(
                     self._conn,
                     stream=_STREAM,
                     event_type="document.radicado.updated",
@@ -1750,8 +1735,6 @@ class DocumentService:
                         "tracking_number": radicado.tracking_number,
                     },
                 )
-        if pendiente is not None:
-            await outbox.enviar(self._conn, self._redis, pendiente)
         return _to_response(radicado)
 
 

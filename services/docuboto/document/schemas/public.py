@@ -93,7 +93,7 @@ class VentanillaEstado(BaseModel):
     #: No forma parte de `habilitada` (que describe el organigrama y el catálogo).
     politica_publicada: bool = False
     #: (C16, ADR-038) El antirrobots puede emitir y consumir retos AHORA: clave
-    #: configurada y Redis responde. Si es `false`, `POST` responde 503
+    #: HMAC configurada. Si es `false`, `POST` responde 503
     #: `antirrobots_no_disponible`. No forma parte de `habilitada`.
     antirrobots_disponible: bool = False
     #: Contacto de radicación de la entidad (de sus parámetros `entidad_*`, el mismo

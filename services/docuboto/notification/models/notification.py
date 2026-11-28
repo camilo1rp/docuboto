@@ -31,30 +31,3 @@ class Notification:
     # el body sin redactar; este flag documenta que ESTA instancia es la
     # copia destinada a persistencia, no el correo enviado.
     sensible: bool = False
-
-    def to_redis_hash(self) -> dict[str, str]:
-        return {
-            "id": self.id,
-            "recipient_email": self.recipient_email,
-            "subject": self.subject,
-            "body": self.body,
-            "status": self.status,
-            "sent_at": self.sent_at,
-            "event_type": self.event_type or "",
-            "tenant_slug": self.tenant_slug or "",
-            "sensible": "1" if self.sensible else "",
-        }
-
-    @classmethod
-    def from_redis_hash(cls, data: dict[str, str]) -> Notification:
-        return cls(
-            id=data["id"],
-            recipient_email=data["recipient_email"],
-            subject=data["subject"],
-            body=data["body"],
-            status=data["status"],
-            sent_at=data["sent_at"],
-            event_type=data.get("event_type") or None,
-            tenant_slug=data.get("tenant_slug") or None,
-            sensible=bool(data.get("sensible")),
-        )

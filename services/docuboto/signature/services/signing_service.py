@@ -45,7 +45,6 @@ from signature.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
 from signature.core.events import publish_indice_firmado
 from signature.core.keys import SealNotFoundError, load_seal
 from signature.core.ocsp import OcspMaterialRequiredError
-from signature.core.redis_client import get_redis
 from signature.core.secret_derivation import KEY_VERSION_SIN_HMAC
 from signature.core.tsa import TsaUnavailableError
 from signature.providers import get_provider
@@ -73,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 # Prefijo del filename subido a storage-service (H-H, E06/F4) — clave EXACTA
 # de `XADES_ELIGIBLE_OBJETO_TIPOS`: el único punto que necesita distinguir
-# `objeto_tipo` dentro del tramo `xades_local` además del evento Redis más
+# `objeto_tipo` dentro del tramo `xades_local` además del evento del bus más
 # abajo. Indexación directa (no `.get`): `provider_name == "xades_local"`
 # implica `payload.objeto_tipo in XADES_ELIGIBLE_OBJETO_TIPOS` por
 # construcción de `_select_provider_name`, así que esta clave SIEMPRE existe.
@@ -344,9 +343,8 @@ async def sign_payload(
     # para anidarse (abre su propia (sub)transacción vía savepoint — ver su
     # docstring), así que envolver aquí es seguro. El upload a MinIO y el
     # sellado ya ocurrieron antes de este bloque (no son objeto de rollback);
-    # la publicación del evento Redis (`publish_indice_firmado`, más abajo)
-    # queda deliberadamente FUERA — es best-effort y un fallo de Redis no
-    # debe revertir una firma ya trazada.
+    # el evento (`publish_indice_firmado`) va DENTRO, al final: es una fila
+    # más de esta transacción (ADR-049).
     async with conn.transaction():
         row = await FirmaRepository(conn).insert(
             {
@@ -578,6 +576,25 @@ async def sign_payload(
                     canal=_audit.CANAL_PETICION,
                 )
 
+        # El evento va en la transacción de la firma (ADR-049): existe si y solo
+        # si la firma quedó trazada. GATEADO por tipo (H-H, E06/F4):
+        # `firma.indice.firmado` tiene un ÚNICO consumidor (E15, el índice
+        # electrónico) — el acta de transferencia NO tiene consumidor de este
+        # evento, así que NUNCA se publica para `objeto_tipo="acta_transferencia"`.
+        if provider_name == "xades_local" and payload.objeto_tipo == "indice":
+            await publish_indice_firmado(
+                conn,
+                tenant_slug=tenant_slug,
+                actor=str(firmante_id),
+                firma_id=str(row["id"]),
+                expediente_id=payload.objeto_id,
+                indice_id=payload.indice_id,
+                version=payload.version,
+                minio_key_firmado=minio_key_firmado,
+                nivel_conformidad=signed.nivel_conformidad,
+                xades_level=signed.xades_level,
+            )
+
     # Bookkeeping best-effort del sello vigente (migración 009 — no crítico).
     if provider_name == "xades_local":
         try:
@@ -591,33 +608,6 @@ async def sign_payload(
             logger.warning(
                 "No se pudo actualizar signer_provider_config para tenant=%s",
                 tenant_slug,
-                exc_info=True,
-            )
-
-    # Evento best-effort — un fallo de Redis nunca revierte ni bloquea una firma
-    # ya persistida (ver docstring de app.core.events). GATEADO por tipo
-    # (H-H, E06/F4): `firma.indice.firmado` tiene un ÚNICO consumidor (E15,
-    # el índice electrónico) — el acta de transferencia NO tiene consumidor
-    # de este evento, así que NUNCA se publica para `objeto_tipo=
-    # "acta_transferencia"` (evita fabricar un evento sin oyente).
-    if provider_name == "xades_local" and payload.objeto_tipo == "indice":
-        try:
-            await publish_indice_firmado(
-                get_redis(),
-                tenant_slug=tenant_slug,
-                actor=str(firmante_id),
-                firma_id=str(row["id"]),
-                expediente_id=payload.objeto_id,
-                indice_id=payload.indice_id,
-                version=payload.version,
-                minio_key_firmado=minio_key_firmado,
-                nivel_conformidad=signed.nivel_conformidad,
-                xades_level=signed.xades_level,
-            )
-        except Exception:
-            logger.warning(
-                "No se pudo publicar firma.indice.firmado para firma_id=%s",
-                row["id"],
                 exc_info=True,
             )
 

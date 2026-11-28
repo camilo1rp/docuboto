@@ -32,11 +32,10 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, status
-from orpycamcp_common import audit
+from orpycamcp_common import audit, events
 
 from document.core import reglas_tipo
 from document.repositories.anulacion_repository import AnulacionRepository
@@ -46,7 +45,6 @@ from document.schemas.anulacion import (
     AnulacionResponse,
     AnulacionSolicitud,
 )
-from document.services import outbox
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +60,10 @@ class AnulacionService:
     def __init__(
         self,
         conn: asyncpg.Connection,
-        redis: Any | None = None,
         tenant_slug: str | None = None,
     ) -> None:
         self._conn = conn
         self._repo = AnulacionRepository(conn)
-        self._redis = redis
         self._slug = tenant_slug
 
     def _audit_tenant(self) -> str:
@@ -253,11 +249,10 @@ class AnulacionService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-            # OUTBOX (AREA-09-05): SOLO al aprobar — solicitar/rechazar no cambian el
+            # El evento (ADR-049) SOLO al aprobar — solicitar/rechazar no cambian el
             # estado del radicado. Misma tx que la decisión y su asiento.
-            pendiente = None
             if aprobar and tracking_number and self._slug:
-                pendiente = await outbox.encolar(
+                await events.emit(
                     self._conn,
                     stream=_STREAM,
                     event_type="document.radicado.annulled",
@@ -266,11 +261,6 @@ class AnulacionService:
                     dedup_key=f"{tracking_number}:annulled",
                     payload={"id": str(radicado_id), "tracking_number": tracking_number},
                 )
-        # Camino rápido tras el commit. El evento ya está en el outbox (encolado
-        # dentro de la tx): un fallo de Redis aquí lo deja pendiente para el relé
-        # del barrido en vez de perderlo (AREA-09-05).
-        if pendiente is not None:
-            await outbox.enviar(self._conn, self._redis, pendiente)
         return _resp(row)
 
     async def aprobar(

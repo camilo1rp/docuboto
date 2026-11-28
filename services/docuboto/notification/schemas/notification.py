@@ -18,7 +18,7 @@ class NotificationSend(BaseModel):
     body: str
     tenant_slug: str | None = None
     # RF-FIR-13 (E06 Inc.2 — cierre de fuga de OTP): marca correos cuyo body
-    # NUNCA debe persistirse (ni en BD ni en Redis). El envío SMTP siempre usa
+    # NUNCA debe persistirse (ni en BD ni en el bus). El envío SMTP siempre usa
     # el body real; solo la copia persistida se redacta. Default False ->
     # retrocompatible con todo envío existente (workflow/document events).
     sensible: bool = False

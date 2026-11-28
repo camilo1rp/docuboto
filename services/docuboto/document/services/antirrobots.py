@@ -10,13 +10,18 @@
 """Antirrobots de la ventanilla pública: verificar el reto ALTCHA y CONSUMIRLO (C16).
 
 El cálculo vive en `document/core/altcha.py` (puro). Aquí está lo que tiene estado: el
-antirreplay en Redis. Un reto resuelto sirve UNA vez: sin esto, quien resuelve
-uno podría radicar con él las veces que quiera hasta que venza.
+antirreplay, en la tabla `altcha_usados` del schema de la entidad (ADR-049). Un reto
+resuelto sirve UNA vez: sin esto, quien resuelve uno podría radicar con él las veces que
+quiera hasta que venza.
 
-Fail-CLOSED en todo: sin clave configurada, o con Redis caído, no se radica
-(503 `antirrobots_no_disponible`, que nombra los canales alternos). No se radica
+Fail-CLOSED en todo: sin clave configurada, o sin poder escribir el consumo, no se
+radica (503 `antirrobots_no_disponible`, que nombra los canales alternos). No se radica
 sin poder garantizar un solo uso; y no es un «cierre total no neutral»: no corre
 plazo alguno sin radicado, y el canal presencial/correo existe.
+
+El consumo va en la conexión de la petición: si la radicación revierte, el reto vuelve a
+estar libre, y dos peticiones simultáneas con el mismo reto se ordenan en la clave
+primaria — la segunda espera a la primera y, si confirmó, recibe `antirrobots_usado`.
 """
 
 from __future__ import annotations
@@ -68,18 +73,14 @@ def error(codigo: str, contacto: dict[str, str] | None = None) -> HTTPException:
     return HTTPException(status_code=codigo_http, detail=cuerpo)
 
 
-async def disponible(redis: Any) -> bool:
-    """¿Podría radicarse AHORA? Clave de >= 32 bytes y Redis que responde al PING.
+def disponible() -> bool:
+    """¿Podría radicarse AHORA? Hay una clave HMAC de >= 32 bytes.
 
     Es lo que `GET /ventanilla/estado` publica como `antirrobots_disponible`: sin esto
-    el estado decía «habilitada» con una ventanilla que respondería 503 a todos.
+    el estado decía «habilitada» con una ventanilla que respondería 503 a todos. El
+    almacén del antirreplay es la misma base que atiende la consulta del estado.
     """
-    if len(settings.altcha_hmac_key.encode()) < altcha.HMAC_MIN_BYTES or redis is None:
-        return False
-    try:
-        return bool(await redis.ping())
-    except Exception:  # noqa: BLE001 — un Redis que no responde no es «disponible»
-        return False
+    return len(settings.altcha_hmac_key.encode()) >= altcha.HMAC_MIN_BYTES
 
 
 def clave_configurada() -> bytes:
@@ -102,7 +103,7 @@ def emitir(tenant: str, *, ahora: int | None = None) -> dict[str, Any]:
 
 
 async def exigir_reto(
-    redis: Any, payload: str, tenant: str, *, ahora: int | None = None
+    conn: Any, payload: str, tenant: str, *, ahora: int | None = None
 ) -> None:
     """Verifica el payload y consume el reto, o lanza el HTTPException que corresponde."""
     instante = int(time.time()) if ahora is None else ahora
@@ -116,15 +117,20 @@ async def exigir_reto(
         )
     except altcha.AltchaRechazado as exc:
         raise error(exc.codigo) from None
-    if redis is None:
-        raise error("antirrobots_no_disponible")
-    # Se consume tras validar firma y vencimiento: no se escriben claves por payloads basura.
-    # El TTL cubre lo que le queda al reto más la holgura de reloj entre réplicas.
+    # Se consume tras validar firma y vencimiento: no se escriben filas por payloads basura.
+    # La vida cubre lo que le queda al reto más la holgura de reloj.
     ttl = max(1, expires - instante + settings.altcha_skew_segundos)
     try:
-        nuevo = await redis.set(f"altcha:usado:{tenant}:{challenge}", 1, nx=True, ex=ttl)
-    except Exception:  # noqa: BLE001 — Redis caído no es «reto válido»
-        logger.warning("antirreplay ALTCHA: Redis no responde", exc_info=True)
+        await conn.execute("DELETE FROM altcha_usados WHERE expira_en < now()")
+        nuevo = await conn.fetchval(
+            "INSERT INTO altcha_usados (challenge, expira_en) "
+            "VALUES ($1, now() + make_interval(secs => $2::int)) "
+            "ON CONFLICT (challenge) DO NOTHING RETURNING challenge",
+            challenge,
+            ttl,
+        )
+    except Exception:  # noqa: BLE001 — sin poder anotar el consumo no hay «un solo uso»
+        logger.warning("antirreplay ALTCHA: no se pudo anotar el consumo", exc_info=True)
         raise error("antirrobots_no_disponible") from None
-    if not nuevo:
+    if nuevo is None:
         raise error("antirrobots_usado")

@@ -25,7 +25,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, status
-from orpycamcp_common import audit
+from orpycamcp_common import audit, events
 from pydantic import ValidationError
 
 from docuboto.config import document as settings
@@ -46,7 +46,6 @@ from document.schemas.postal import (
     ShipmentStatusUpdate,
     TrackingResponse,
 )
-from document.services import outbox
 from document.services.postal_provider import consultar_estado, generar_guia, mapear_estado
 from storage import api as storage_api
 
@@ -136,15 +135,11 @@ class PostalService:
     def __init__(
         self,
         conn: asyncpg.Connection,
-        redis: Any | None = None,
         tenant_slug: str | None = None,
     ) -> None:
         self._conn = conn
         self._repo = PostalRepository(conn)
-        self._redis = redis
         self._slug = tenant_slug
-        # Eventos encolados en el outbox a la espera del commit para su camino rápido.
-        self._por_enviar: list[dict[str, Any]] = []
 
     async def _response(self, row) -> ShipmentResponse:
         events = await self._repo.events(row["id"])
@@ -326,13 +321,12 @@ class PostalService:
                     canal=audit.CANAL_PETICION,
                 )
                 # B10: la devolución MANUAL avisa igual que la del operador, y el
-                # evento sale del mismo acto (outbox), no de un best-effort aparte.
+                # evento sale del mismo acto (misma tx), no de un best-effort aparte.
                 await self._encolar_estado(row, payload.estado, str(actor) if actor else None)
         except asyncpg.UniqueViolationError as exc:
             # Carrera: otro envío tomó el mismo acuse entre el cotejo y el UPDATE.
             # La guarda definitiva la da el índice único parcial `postal_shipment_acuse_file_id_uq`.
             raise _acuse_ya_referenciado() from exc
-        await self.enviar_pendientes()
         return await self._response(row)
 
     async def _verificar_acuse(
@@ -631,7 +625,7 @@ class PostalService:
         Fail-closed en cada puerta: sin credencial del operador o firma inválida →
         401; estado del operador no mapeable → 422; guía desconocida → 404. La
         idempotencia (dedup por `(operador, event_id)`) + la transición + el
-        asiento + el evento (outbox) son atómicos; el envío a Redis va tras el commit.
+        asiento + el evento son atómicos: el evento es una fila de la misma tx (ADR-049).
 
         `suspendida` (ADR-035, B10): la entidad existe pero está suspendida. La firma se
         verifica igual y ANTES de cualquier efecto: cuerpo ilegible, operador sin
@@ -654,8 +648,6 @@ class PostalService:
         result = await self.aplicar_autenticado(
             payload, actor=f"postal:{payload.operador}", ocurrido_at=None, diferido_id=None
         )
-        # 7) Evento de dominio para E16 — tras confirmar la tx (la fila ya está en el outbox).
-        await self.enviar_pendientes()
         return result
 
     async def diferir(
@@ -732,8 +724,7 @@ class PostalService:
         diferido, la recepción y no el drenaje): llega al historial del envío como `ts`.
         No es la fecha del hecho postal: esa, si el operador la manda (`payload.ocurrido_at`,
         dentro del cuerpo firmado), se guarda aparte como `ocurrido_operador_at`. El evento
-        de dominio queda en el outbox dentro de la tx; quien llama hace
-        `enviar_pendientes()` DESPUÉS de confirmarla.
+        de dominio se publica dentro de la tx: existe si y solo si el cambio existe.
         """
         interno, shipment = await self._resolver(payload)
         recibido = ocurrido_at or datetime.now(UTC)
@@ -838,22 +829,21 @@ class PostalService:
         return result
 
     async def _encolar_estado(self, shipment: asyncpg.Record, estado: str, actor: str | None) -> None:
-        """Deja el evento `document.envio.<estado>` en el OUTBOX, en la tx en curso.
+        """Publica el evento `document.envio.<estado>` en la tx en curso (ADR-049).
 
-        Antes se publicaba a Redis tras el commit tragándose el fallo: con Redis caído la
-        devolución se perdía y nadie avisaba a la dependencia. Con el outbox el evento
-        existe si y solo si el cambio existe; el relé del barrido reenvía lo que no salió.
+        Antes se publicaba tras el commit tragándose el fallo: la devolución se perdía y
+        nadie avisaba a la dependencia. Ahora el evento existe si y solo si el cambio existe.
         """
         if estado not in _STREAM_EVENT:
             return
-        pendiente = await outbox.encolar(
+        await events.emit(
             self._conn,
             stream=_STREAM,
             event_type=_STREAM_EVENT[estado],
             tenant_slug=self._slug or "",
             actor=actor,
-            # dedup_key con tenant: el stream es global; evita cualquier
-            # colisión cross-tenant (remediación de auditoría, Baja).
+            # dedup_key con tenant: evita cualquier colisión cross-tenant en los
+            # consumidores (remediación de auditoría, Baja).
             dedup_key=f"{self._slug or ''}:{shipment['guia']}:{estado}",
             payload={
                 "shipment_id": str(shipment["id"]),
@@ -863,10 +853,3 @@ class PostalService:
                 "estado": estado,
             },
         )
-        self._por_enviar.append(pendiente)
-
-    async def enviar_pendientes(self) -> None:
-        """Camino rápido tras el commit. Nunca lanza: lo no enviado lo reenvía el relé."""
-        pendientes, self._por_enviar = self._por_enviar, []
-        for p in pendientes:
-            await outbox.enviar(self._conn, self._redis, p)

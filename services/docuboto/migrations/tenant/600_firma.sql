@@ -81,7 +81,7 @@ COMMENT ON COLUMN firma_challenge.firmante_id IS 'Debe coincidir con firma_caden
 
 COMMENT ON COLUMN firma_challenge.hash_documento IS 'Snapshot de firma_solicitud.payload_sha256 al emitir el challenge. Ata el segundo factor al documento exacto (protección cross-documento, RF-FIR-13).';
 
-COMMENT ON COLUMN firma_challenge.otp_hash IS 'HMAC-SHA256(otp, signature_secret). El OTP en claro NUNCA se persiste, ni se loguea, ni se registra en audit_log/Redis, ni se devuelve en respuesta alguna.';
+COMMENT ON COLUMN firma_challenge.otp_hash IS 'HMAC-SHA256(otp, signature_secret). El OTP en claro NUNCA se persiste, ni se loguea, ni se registra en audit_log ni en el bus de eventos, ni se devuelve en respuesta alguna.';
 
 COMMENT ON COLUMN firma_challenge.estado IS 'pendiente: emitido, esperando OTP. verificado: reservado para un futuro flujo de verificación desacoplada del acto de firma (no usado en Inc.2 — /sign verifica y consume en un solo paso). consumido: OTP correcto y ya aplicado a una firma (terminal, anti-replay). expirado: venció expira_at sin verificarse. bloqueado: agotó max_intentos.';
 

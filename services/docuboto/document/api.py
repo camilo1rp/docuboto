@@ -11,7 +11,7 @@
 
 `mover_flujo` is self-contained so the split workflow image can copy just this
 file. The process binds `abrir_flujo_si_hay` in the unified lifespan; document
-tests and the split document image leave it unbound and keep the Redis consumer.
+tests and the split document image leave it unbound and rely on the workflow consumer.
 
 Las lecturas de sistema (inventario de anexos, clasificados, huellas, registro
 para la pasarela) eran rutas `/api/v1/internal/documentos/*` selladas con token
@@ -32,7 +32,6 @@ from orpycamcp_common import audit
 from orpycamcp_common.database import acquire_tenant
 
 from document.core.causales_reserva import CAUSALES
-from document.core.redis_client import get_redis_or_none
 from document.repositories.document_repository import DocumentRepository
 from document.schemas.internal import (
     AnexoInternalItem,
@@ -220,7 +219,7 @@ async def purge_radicados(
         return {"radicados_eliminados": 0, "anexos_eliminados": 0}
     try:
         async with acquire_tenant(tenant_slug) as conn:
-            return await PurgaService(conn, tenant_slug, redis=get_redis_or_none()).purgar_radicados(
+            return await PurgaService(conn, tenant_slug).purgar_radicados(
                 radicado_ids,
                 expediente_id=str(expediente_id),
                 motivo=motivo,

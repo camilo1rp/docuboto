@@ -78,7 +78,7 @@ class DeadLetterRepository:
     # `evento_dead_letter` es una TABLA FÍSICA COMPARTIDA dentro del schema del
     # tenant: tanto signature-service como workflow-service la crean (misma DDL,
     # `CREATE TABLE IF NOT EXISTS`) sobre la MISMA base de datos. Las filas de
-    # cada servicio se distinguen por `origin_group` (el GROUP del consumer Redis
+    # cada servicio se distinguen por `origin_group` (el grupo consumidor del bus
     # que las generó: "signature-service" / "workflow-service"; ver
     # `app/workers/document_consumer.py` y `orpycamcp_common.events.reclaim_stale`,
     # que escribe `dead_letter_group = group` en el `failure_meta`). TODA consulta

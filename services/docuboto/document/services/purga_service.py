@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
 
 import asyncpg
 from orpycamcp_common import audit, events
@@ -48,15 +47,10 @@ _STREAM = "orpycamcp.document.events"
 
 
 class PurgaService:
-    def __init__(
-        self, conn: asyncpg.Connection, tenant_slug: str, redis: Any | None = None
-    ) -> None:
+    def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
         self._tenant_slug = tenant_slug
         self._repo = DocumentRepository(conn, tenant_slug)
-        # Se inyecta, como en `AnulacionService`: el evento es best-effort y sin
-        # Redis el borrado tiene que seguir ocurriendo igual.
-        self._redis = redis
 
     async def purgar_radicados(
         self,
@@ -151,12 +145,10 @@ class PurgaService:
                     },
                     canal="system",
                 )
+                # 3. El evento, en la MISMA transacción que el borrado y su asiento
+                #    (ADR-049): existe si y solo si la destrucción ocurrió.
+                await self._emitir_purgado(radicado_id, tracking, actor)
             eliminados.append((radicado_id, tracking))
-
-        # 3. El evento, best-effort y DESPUÉS del commit: la purga de las copias
-        #    derivadas no puede revertir una destrucción que ya ocurrió.
-        for radicado_id, tracking in eliminados:
-            await self._emitir_purgado(radicado_id, tracking, actor)
 
         return {
             "radicados_eliminados": len(eliminados),
@@ -171,24 +163,17 @@ class PurgaService:
         derivadas. Docuboto ya no indexa embeddings ni consume este evento
         (ADR-046).
 
-        Best-effort y **nunca revierte**: los bytes ya no están. Un fallo aquí
-        deja una copia derivada viva, que es un problema real pero menor que
-        deshacer una destrucción que ya es irreversible — y converge por
-        reentrega si el consumidor es idempotente.
+        Va en la transacción del borrado: es una fila más, no una llamada a un
+        servicio que pueda fallar aparte.
         """
-        if self._redis is None or not tracking_number:
+        if not tracking_number:
             return
-        try:
-            await events.emit(
-                self._redis,
-                _STREAM,
-                "document.radicado.purged",
-                tenant_slug=self._tenant_slug,
-                actor=str(actor) if actor else None,
-                dedup_key=f"{tracking_number}:purged",
-                payload={"id": str(radicado_id), "tracking_number": tracking_number},
-            )
-        except Exception:  # noqa: BLE001 — evento best-effort, ver docstring.
-            logger.warning(
-                "No se pudo publicar la purga del radicado %s", tracking_number, exc_info=True
-            )
+        await events.emit(
+            self._conn,
+            _STREAM,
+            "document.radicado.purged",
+            tenant_slug=self._tenant_slug,
+            actor=str(actor) if actor else None,
+            dedup_key=f"{tracking_number}:purged",
+            payload={"id": str(radicado_id), "tracking_number": tracking_number},
+        )

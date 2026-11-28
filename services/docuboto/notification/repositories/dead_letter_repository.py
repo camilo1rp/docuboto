@@ -84,7 +84,7 @@ class DeadLetterRepository:
     # tenant: signature-service, workflow-service y notification-service la crean
     # (misma DDL, `CREATE TABLE IF NOT EXISTS`) sobre la MISMA base de datos. Las
     # filas de cada servicio se distinguen por `origin_group` (el GROUP del
-    # consumer Redis que las generó: "signature-service" / "workflow-service" /
+    # grupo consumidor que las generó: "signature-service" / "workflow-service" /
     # "notification-service"; ver `app/workers/stream_worker.py` y
     # `orpycamcp_common.events.reclaim_stale`, que escribe
     # `dead_letter_group = group` en el `failure_meta`). TODA consulta de este

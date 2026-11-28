@@ -285,7 +285,7 @@ class ArchiveService:
         # Atomicidad expediente<->auditoría: código+INSERT+índice v0+evento de
         # apertura+asiento forense son un único acto de negocio (Ley 594/2000
         # arts. 21-24) — si cualquiera falla, ninguno debe persistir. Todo el
-        # tramo es 100% DB (sin HTTP/Redis a mitad, verificado en
+        # tramo es 100% DB (sin HTTP a mitad, verificado en
         # `index_service.create_version_zero`/`insert_expediente_evento`/
         # `audit.append`), así que envolverlo es seguro. `audit.append` abre
         # su propia sub-transacción con `pg_advisory_xact_lock`; anidada aquí
@@ -2540,7 +2540,7 @@ class ArchiveService:
         # falla a mitad, ninguno debe persistir (antes: autocommit por
         # statement, un fallo entre el link y el `audit.append` dejaba el
         # vínculo hecho SIN su asiento de auditoría). Tramo 100% DB (sin
-        # HTTP/Redis a mitad); `audit.append` va último para minimizar la
+        # HTTP a mitad); `audit.append` va último para minimizar la
         # retención del `pg_advisory_xact_lock` del tenant que abre.
         async with self._conn.transaction():
             link = await self._repo.link_radicado(

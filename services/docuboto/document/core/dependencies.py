@@ -10,7 +10,7 @@
 """Dependencias HTTP propias de document (ADR-047: la conexión es `orpycamcp_common.database`).
 
 La entidad que atiende las rutas públicas (`/public/{tenant}/...`), el doble
-inyectable de `tenant.api` y el cliente Redis de la petición.
+inyectable de `tenant.api`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from types import ModuleType
-from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, Path, Request, status
@@ -35,11 +34,6 @@ def get_tenant_client() -> ModuleType:
     llaman) para que las pruebas sustituyan la entidad entera con un doble.
     """
     return tenant_api
-
-
-def get_redis(request: Request) -> Any:
-    """Cliente Redis compartido (publicación de eventos de dominio)."""
-    return request.app.state.redis
 
 
 def _no_encontrado() -> HTTPException:

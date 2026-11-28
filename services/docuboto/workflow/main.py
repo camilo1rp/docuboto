@@ -13,7 +13,7 @@ workflow-service — FastAPI application factory.
 Responsibilities:
 - Distribution and routing of radicados between dependencias (departments)
 - Full audit trail of every step in a document's lifecycle
-- Redis Stream events on every state change
+- Domain events on every state change (PostgreSQL bus, ADR-049)
 - Tenant-isolated storage: PostgreSQL schema per tenant (SET search_path)
 """
 

@@ -10,7 +10,7 @@
 """Service-identifying constants shared across modules that must NOT import
 each other directly (avoids a circular import between the worker and the job).
 
-``DLQ_GROUP`` is the single source of truth for this service's Redis consumer
+``DLQ_GROUP`` is the single source of truth for this service's event-bus consumer
 group name, which doubles as the ``origin_group`` value written to (and
 filtered on) the shared ``evento_dead_letter`` table — see the module-level
 note in ``signature/repositories/dead_letter_repository.py``. Every reader of

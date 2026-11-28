@@ -31,7 +31,6 @@ from workflow.core.dependencias import (
     dependencia_desconocida,
     dependencia_inconsistente,
 )
-from workflow.core.redis_client import get_redis
 from workflow.models.flow import FlowStep
 from workflow.repositories.workflow_repository import (
     CascadeResult,
@@ -218,29 +217,25 @@ class WorkflowService:
         return {"antes": antes, "despues": despues}
 
     async def _emitir_cambios(self, actor: uuid.UUID | None) -> None:
-        """Evento `workflow.radicado.estado_cambiado` por cada cambio, tras el
-        commit. Best-effort: la BD es la fuente de verdad, un fallo de Redis no
-        aborta el acto."""
+        """Evento `workflow.radicado.estado_cambiado` por cada cambio, DENTRO de la
+        transacción del acto (ADR-049): el evento existe si y solo si el cambio."""
         cambios, self._cambios = self._cambios, []
         for c in cambios:
-            try:
-                await events.emit(
-                    get_redis(),
-                    _STREAM,
-                    _EVT_ESTADO,
-                    tenant_slug=self._tenant_slug,
-                    actor=str(actor) if actor else None,
-                    dedup_key=f"{c.radicado_id}:{c.despues}:{c.flow_event_id}",
-                    payload={
-                        "radicado_id": str(c.radicado_id),
-                        "tracking_number": c.tracking_number,
-                        "antes": c.antes,
-                        "despues": c.despues,
-                        **await self._nivel_payload(c.radicado_id),
-                    },
-                )
-            except Exception:  # noqa: BLE001 — best-effort tras commit.
-                logger.warning("No se pudo emitir %s", _EVT_ESTADO, exc_info=True)
+            await events.emit(
+                self._conn,
+                _STREAM,
+                _EVT_ESTADO,
+                tenant_slug=self._tenant_slug,
+                actor=str(actor) if actor else None,
+                dedup_key=f"{c.radicado_id}:{c.despues}:{c.flow_event_id}",
+                payload={
+                    "radicado_id": str(c.radicado_id),
+                    "tracking_number": c.tracking_number,
+                    "antes": c.antes,
+                    "despues": c.despues,
+                    **await self._nivel_payload(c.radicado_id),
+                },
+            )
 
     async def assign(
         self,
@@ -266,8 +261,6 @@ class WorkflowService:
             regla_id=regla_id,
             regla_nombre=regla_nombre,
         )
-        await self._publish(_EVT_CREATED, step)
-        await self._emitir_cambios(assigned_by)
         return _to_response(step)
 
     async def transfer(self, payload: FlowStepCreate, assigned_by: uuid.UUID) -> FlowStepResponse:
@@ -277,8 +270,6 @@ class WorkflowService:
         deriva el servidor del paso activo (ADR-032) y el cliente solo puede
         CONFIRMARLO (409 `origen_desactualizado` si ya no coincide)."""
         step = await self._create_step(payload, assigned_by)
-        await self._publish(_EVT_CREATED, step)
-        await self._emitir_cambios(assigned_by)
         return _to_response(step)
 
     async def get_history(
@@ -438,7 +429,7 @@ class WorkflowService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        await self._emitir_cambios(actor)
+            await self._emitir_cambios(actor)
         return _to_event_response(event)
 
     async def inbox(
@@ -501,37 +492,28 @@ class WorkflowService:
         steps = await self._repo.list_overdue_unnotified()
         if not steps:
             return 0
-        try:
-            redis = get_redis()
-        except Exception:  # noqa: BLE001 — sin Redis no se emiten alertas
-            redis = None
-
-        notified: list[uuid.UUID] = []
-        for s in steps:
-            if redis is not None:
-                try:
-                    await events.emit(
-                        redis,
-                        _STREAM,
-                        "workflow.step.overdue",
-                        tenant_slug=self._tenant_slug,
-                        dedup_key=f"overdue:{s.id}",
-                        payload={
-                            "radicado_id": str(s.radicado_id),
-                            "tracking_number": s.tracking_number,
-                            "to_dept": s.to_dept,
-                            "to_dept_code": s.to_dept_code,
-                            "assigned_to": str(s.assigned_to) if s.assigned_to else None,
-                            "due_at": s.due_at.isoformat() if s.due_at else None,
-                            **await self._nivel_payload(s.radicado_id),
-                        },
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.warning("No se pudo emitir alerta de vencimiento", exc_info=True)
-                    continue
-            notified.append(s.id)
-        await self._repo.mark_overdue_notified(notified)
-        return len(notified)
+        # El aviso y la marca de «avisado» en la misma transacción (ADR-049): no
+        # hay aviso sin marca ni marca sin aviso.
+        async with self._conn.transaction():
+            for s in steps:
+                await events.emit(
+                    self._conn,
+                    _STREAM,
+                    "workflow.step.overdue",
+                    tenant_slug=self._tenant_slug,
+                    dedup_key=f"overdue:{s.id}",
+                    payload={
+                        "radicado_id": str(s.radicado_id),
+                        "tracking_number": s.tracking_number,
+                        "to_dept": s.to_dept,
+                        "to_dept_code": s.to_dept_code,
+                        "assigned_to": str(s.assigned_to) if s.assigned_to else None,
+                        "due_at": s.due_at.isoformat() if s.due_at else None,
+                        **await self._nivel_payload(s.radicado_id),
+                    },
+                )
+            await self._repo.mark_overdue_notified([s.id for s in steps])
+        return len(steps)
 
     async def rollback(
         self, radicado_id: uuid.UUID, actor: uuid.UUID | None, motivo: str
@@ -613,7 +595,7 @@ class WorkflowService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        await self._emitir_cambios(actor)
+            await self._emitir_cambios(actor)
         return _to_response(reactivated)
 
     async def devolver(
@@ -696,7 +678,7 @@ class WorkflowService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        await self._emitir_cambios(actor)
+            await self._emitir_cambios(actor)
         return _to_response(new_step)
 
     async def reassign_cascade(
@@ -781,8 +763,8 @@ class WorkflowService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        self._cambios = list(result.cambios)
-        await self._emitir_cambios(actor)
+            self._cambios = list(result.cambios)
+            await self._emitir_cambios(actor)
         return result
 
     async def get_current(
@@ -906,8 +888,8 @@ class WorkflowService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        await self._publish(_EVT_COMPLETED, step)
-        await self._emitir_cambios(actor)
+            await self._publish(_EVT_COMPLETED, step)
+            await self._emitir_cambios(actor)
         return _to_response(step)
 
     async def finalizar(
@@ -986,8 +968,8 @@ class WorkflowService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        await self._publish(_EVT_COMPLETED, step)
-        await self._emitir_cambios(actor)
+            await self._publish(_EVT_COMPLETED, step)
+            await self._emitir_cambios(actor)
         return _to_response(step)
 
     # ------------------------------------------------------------------
@@ -1382,45 +1364,36 @@ class WorkflowService:
                 },
                 canal=audit.CANAL_PETICION,
             )
+            await self._publish(_EVT_CREATED, step)
+            await self._emitir_cambios(assigned_by)
         return step
 
     async def _publish(self, event_type: str, step: FlowStep) -> None:
         # Sobre canónico de orpycamcp_common (ADR-010): los campos de dominio
-        # viajan en `payload`. Best-effort: un fallo de Redis nunca aborta la
-        # operación de escritura (la BD es la fuente de verdad).
-        try:
-            redis = get_redis()
-            await events.emit(
-                redis,
-                _STREAM,
-                event_type,
-                tenant_slug=self._tenant_slug,
-                actor=str(step.assigned_by) if step.assigned_by else None,
-                dedup_key=f"{step.id}:{event_type}",
-                payload={
-                    "radicado_id": str(step.radicado_id),
-                    "tracking_number": step.tracking_number,
-                    "step_number": step.step_number,
-                    "from_dept": step.from_dept,
-                    "to_dept": step.to_dept,
-                    # Ambos campos (ADR-010 aditivo): el consumidor prefiere el CÓDIGO y
-                    # cae al nombre solo para eventos anteriores a la migración 019.
-                    "from_dept_code": step.from_dept_code,
-                    "to_dept_code": step.to_dept_code,
-                    "action": step.action,
-                    "status": step.status,
-                    **await self._nivel_payload(step.radicado_id),
-                },
-            )
-        except Exception:
-            # El paso ya está en la base. Tragarse el fallo dejaba a notification
-            # y a la pasarela sin el evento y sin una línea que lo dijera.
-            logger.warning(
-                "No se pudo publicar %s del paso %s; el cambio quedó en la base",
-                event_type,
-                getattr(step, "id", None),
-                exc_info=True,
-            )
+        # viajan en `payload`. Va en la transacción del acto (ADR-049): si el
+        # evento no se escribe, el paso tampoco.
+        await events.emit(
+            self._conn,
+            _STREAM,
+            event_type,
+            tenant_slug=self._tenant_slug,
+            actor=str(step.assigned_by) if step.assigned_by else None,
+            dedup_key=f"{step.id}:{event_type}",
+            payload={
+                "radicado_id": str(step.radicado_id),
+                "tracking_number": step.tracking_number,
+                "step_number": step.step_number,
+                "from_dept": step.from_dept,
+                "to_dept": step.to_dept,
+                # Ambos campos (ADR-010 aditivo): el consumidor prefiere el CÓDIGO y
+                # cae al nombre solo para eventos anteriores a la migración 019.
+                "from_dept_code": step.from_dept_code,
+                "to_dept_code": step.to_dept_code,
+                "action": step.action,
+                "status": step.status,
+                **await self._nivel_payload(step.radicado_id),
+            },
+        )
 
     async def _nivel_payload(self, radicado_id: uuid.UUID) -> dict[str, int]:
         """`nivel_seguridad` del radicado en el sobre del evento (vacío si no consta).

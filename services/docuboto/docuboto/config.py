@@ -10,7 +10,7 @@
 """La configuración del proceso (ADR-047): una clase `Settings` por familia.
 
 Había nueve `core/config.py`, uno por servicio, con la base de datos, el pool,
-Redis y el emisor de identidad repetidos en cada uno. Aquí `CommonSettings` lleva lo común y
+el bus de eventos y el emisor de identidad repetidos en cada uno. Aquí `CommonSettings` lleva lo común y
 cada dominio tiene su `Settings` con lo suyo; las instancias se llaman como el
 dominio (`docuboto.config.archive`, `docuboto.config.storage`, …).
 
@@ -32,7 +32,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class CommonSettings(BaseSettings):
-    """Lo que comparten todas las familias: base de datos, pool, Redis, log."""
+    """Lo que comparten todas las familias: base de datos, pool, log."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
@@ -43,7 +43,6 @@ class CommonSettings(BaseSettings):
     # Tope por CONSULTA: sin él, una consulta atascada retiene su conexión
     # indefinidamente y el pool se agota sin que nada lo delate.
     db_command_timeout: float = 120.0
-    redis_url: str = "redis://redis:6379/0"
     log_level: str = "info"
 
     @property
@@ -268,6 +267,10 @@ class DocumentSettings(CommonSettings):
     # Retención de lotes COMPLETADOS sin errores (0 = no se purgan). Los que
     # terminaron con errores se conservan: alguien tiene que revisarlos.
     batch_retencion_dias: int = 90
+    # Retención de los eventos del bus ya confirmados por todos sus grupos
+    # (ADR-049). Es también la ventana de los datos personales que viajan en el
+    # sobre; un consumidor parado más tiempo que esto pierde lo purgado.
+    eventos_retencion_dias: int = Field(default=30, ge=1)
 
     # Zona horaria con la que se decide el AÑO del número de radicado y la fecha
     # base del plazo de respuesta.
@@ -874,11 +877,6 @@ storage = StorageSettings()
 
 class WorkflowSettings(CommonSettings):
 
-    # DLQ buffer retention (ADR-021 Fase 4 — MVP-2).
-    # How many days to keep Redis DLQ entries before XTRIM MINID pruning.
-    # The authoritative copy lives in Postgres (evento_dead_letter + audit_log),
-    # so 30 days is a very generous operational buffer.
-    retention_dlq_days: int = Field(default=30, ge=1)
     # How often (in seconds) the worker loop triggers the DLQ trim sweep.
     retention_interval_seconds: int = 86400  # 24 h
     # Dead-letter Postgres retention (ADR-021 Fase 4 — MVP-3).
@@ -909,22 +907,7 @@ class NotificationSettings(CommonSettings):
     # How often (in seconds) the worker loop triggers the retention sweep.
     retention_interval_seconds: int = 86400  # 24 h
 
-    # DLQ buffer retention (ADR-021 Fase 4 — MVP-2).
-    # How many days to keep Redis DLQ entries before XTRIM MINID pruning.
-    # The authoritative copy lives in Postgres (evento_dead_letter + audit_log),
-    # so 30 days is a very generous operational buffer.
-    retention_dlq_days: int = Field(default=30, ge=1)
 
-    #: Días que se conservan los streams de DOMINIO antes de recortarlos.
-    #:
-    #: Llevan el asunto y el nombre del ciudadano de cada radicación, así que sin
-    #: caducidad son un almacén paralelo de datos personales fuera de la Tabla de
-    #: Retención Documental. 30 días es holgado para cualquier consumidor que
-    #: funcione, y acota la ventana de exposición a un mes en vez de para siempre.
-    #:
-    #: Un consumidor detenido más tiempo que esto pierde los eventos recortados:
-    #: por eso el valor es generoso y configurable, no un tope de entradas.
-    retention_streams_days: int = Field(default=30, ge=1)
 
     # SSRF de webhooks salientes (hallazgo Media, auditoría de seguridad — no
     # bloqueante). `WebhookCreate.url` (app/schemas/webhook.py) validaba forma,
@@ -1016,11 +999,6 @@ class SignatureSettings(CommonSettings):
     lta_renovacion_intervalo_s: int = Field(default=86400, ge=0)
     lta_renovacion_retraso_inicial_s: int = Field(default=120, ge=0)
 
-    # DLQ buffer retention (ADR-021 Fase 4 — MVP-2).
-    # How many days to keep Redis DLQ entries before XTRIM MINID pruning.
-    # The authoritative copy lives in Postgres (evento_dead_letter + audit_log),
-    # so 30 days is a very generous operational buffer.
-    retention_dlq_days: int = Field(default=30, ge=1)
     # How often (in seconds) the worker loop triggers the DLQ trim sweep.
     retention_interval_seconds: int = 86400  # 24 h
     # Dead-letter Postgres retention (ADR-021 Fase 4 — MVP-3).

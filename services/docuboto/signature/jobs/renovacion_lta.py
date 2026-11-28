@@ -54,7 +54,6 @@ from docuboto.config import signature as settings
 from signature.core import tsa
 from signature.core.constants import SYSTEM_RECONCILER_ID
 from signature.core.events import publish_lta_renovada
-from signature.core.redis_client import get_redis
 from signature.providers.local import renovar_archive_timestamp, verify_xades
 from signature.repositories.firma_repository import FirmaRepository
 from storage import api as storage_api
@@ -152,10 +151,9 @@ async def _completar_worm(
                 "file_id": str(_file_id(sello["minio_key"])),
             },
         )
-    # Aviso best-effort (B10 §8): el eslabón ya es vigente y no se deshace por un fallo de Redis.
-    try:
+        # Aviso (B10 §8) en la misma transacción que el paso a `vigente` (ADR-049).
         await publish_lta_renovada(
-            get_redis(),
+            conn,
             tenant_slug=slug,
             firma_id=str(sello["firma_id"]),
             ordinal=sello["ordinal"],
@@ -163,8 +161,6 @@ async def _completar_worm(
             xml_sha256=sello["xml_sha256"],
             gen_time=sello["gen_time"].isoformat(),
         )
-    except Exception:  # noqa: BLE001
-        logger.warning("renovación LTA firma=%s: evento no publicado", sello["firma_id"], exc_info=True)
     return True
 
 

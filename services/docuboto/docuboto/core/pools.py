@@ -7,29 +7,17 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""One database pool (`orpycamcp_common.database`) and one Redis client for every domain.
+"""One database pool (`orpycamcp_common.database`) for every domain.
 
-Redis is still bound into each consumer module; ADR-049 retires it.
+Events, queues and locks all live in PostgreSQL (ADR-049): there is no second store.
 """
 
 from __future__ import annotations
 
-import importlib
-from typing import Any
-
 import asyncpg
-import redis.asyncio as aioredis
 from orpycamcp_common import database
 
 from docuboto import config as settings
-
-_MODULOS_REDIS = (
-    "document.core.redis_client",
-    "workflow.core.redis_client",
-    "notification.core.redis_client",
-    "signature.core.redis_client",
-    "knowledge.core.redis_client",
-)
 
 
 async def crear_pool() -> asyncpg.Pool:
@@ -47,15 +35,3 @@ def bind_pool(pool: asyncpg.Pool) -> None:
 
 def unbind_pool() -> None:
     database.bind_pool(None)
-
-
-def bind_redis(client: aioredis.Redis) -> None:
-    for nombre in _MODULOS_REDIS:
-        modulo: Any = importlib.import_module(nombre)
-        modulo._redis = client
-
-
-def unbind_redis() -> None:
-    for nombre in _MODULOS_REDIS:
-        modulo: Any = importlib.import_module(nombre)
-        modulo._redis = None
