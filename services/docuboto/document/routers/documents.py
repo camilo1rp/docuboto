@@ -46,7 +46,7 @@ from document.core.dependencias import (
     marcar_alias_deprecado,
     usa_alias,
 )
-from document.core.dependencies import get_redis, get_tenant_client
+from document.core.dependencies import get_tenant_client
 from document.schemas.document import (
     AnexoResponse,
     DispositionResponse,
@@ -133,10 +133,9 @@ def _build_service(
     conn: asyncpg.Connection,
     slug: str,
     tenant_client: Any = None,
-    redis: Any | None = None,
 ) -> DocumentService:
     try:
-        return DocumentService(conn, slug, tenant_client, redis)
+        return DocumentService(conn, slug, tenant_client)
     except InvalidTenantError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -157,7 +156,6 @@ async def create_document(
     response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
 ) -> DocumentResponse:
     # Código Y nombre juntos deben ser la misma dependencia (ADR-032); el nombre que
     # se guarda lo pone el catálogo, nunca el texto del cliente.
@@ -171,7 +169,7 @@ async def create_document(
         payload.dest_dept_code, payload.dest_dept
     ):
         marcar_alias_deprecado(response, "POST /documents")
-    service = _build_service(conn, _tenant_slug(request), tenant_client, redis)
+    service = _build_service(conn, _tenant_slug(request), tenant_client)
     try:
         return await service.create(payload, _get_registered_by(request))
     except ReclassifyForbiddenError as exc:
@@ -676,7 +674,6 @@ async def reclassify_security_level(
     payload: ReclassifyRequest,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    redis: Any = Depends(get_redis),
 ) -> ReclassifyResponse:
     """Change the security level of a radicado.
 
@@ -691,7 +688,7 @@ async def reclassify_security_level(
     Audit: nivel_anterior, nivel_nuevo, and motivo are recorded in audit_log
     (Ley 594/2000 art. 28 — trazabilidad del ciclo de vida del documento).
     """
-    service = _build_service(conn, _tenant_slug(request), redis=redis)
+    service = _build_service(conn, _tenant_slug(request))
     actor = _get_registered_by(request)
     try:
         result = await service.reclassify(
@@ -739,7 +736,6 @@ async def cambiar_vencimiento(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
 ) -> DueDateResponse:
     """Fija la fecha o la calcula en días hábiles desde la radicación.
 
@@ -747,7 +743,7 @@ async def cambiar_vencimiento(
     niega al asignado del paso activo y cuando la fecha pasa del doble del
     término inicial. El clearance viaja en el WHERE: sin él, la respuesta es 404.
     """
-    service = _build_service(conn, _tenant_slug(request), tenant_client, redis)
+    service = _build_service(conn, _tenant_slug(request), tenant_client)
     try:
         result = await service.fijar_vencimiento(
             document_id,
@@ -794,7 +790,6 @@ async def update_document(
     request: Request,
     response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    redis: Any = Depends(get_redis),
 ) -> DocumentResponse:
     """Actualiza campos mutables — `tracking_number` es inmutable.
 
@@ -824,7 +819,7 @@ async def update_document(
                 "status": 422,
             },
         )
-    service = _build_service(conn, _tenant_slug(request), redis=redis)
+    service = _build_service(conn, _tenant_slug(request))
     actor = _get_registered_by(request)
     if usa_alias(payload.dest_dept_code, payload.dest_dept):
         marcar_alias_deprecado(response, "PATCH /documents/{id}")

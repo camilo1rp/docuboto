@@ -21,7 +21,6 @@ Dos routers:
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
@@ -30,7 +29,6 @@ from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, PLAZO_MAX_MESES
-from document.core.dependencies import get_redis
 from document.schemas.desclasificacion import (
     CausalesReservaResponse,
     CausalReserva,
@@ -52,9 +50,9 @@ def _actor(request: Request) -> uuid.UUID | None:
     return id_opcional(request)
 
 
-def _servicio(request: Request, conn: asyncpg.Connection, redis: Any = None) -> DesclasificacionService:
+def _servicio(request: Request, conn: asyncpg.Connection) -> DesclasificacionService:
     # get_tenant_conn ya garantiza que el header está presente y es válido.
-    return DesclasificacionService(conn, slug_de(request), redis)
+    return DesclasificacionService(conn, slug_de(request))
 
 
 @router.get(
@@ -138,12 +136,11 @@ async def aprobar_desclasificacion(
     solicitud_id: uuid.UUID,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    redis: Any = Depends(get_redis),
 ) -> DesclasificacionAprobada:
     """200 = el nivel ya bajó (misma transacción: nivel, 2 asientos y evento
     `reclassified`). 404 neutro si no la alcanza; 409: `separacion_de_funciones`,
     `solicitud_caducada`, `solicitud_ya_resuelta`, `nivel_cambio`."""
-    return await _servicio(request, conn, redis).aprobar(solicitud_id, _actor(request))
+    return await _servicio(request, conn).aprobar(solicitud_id, _actor(request))
 
 
 @cola_router.post(

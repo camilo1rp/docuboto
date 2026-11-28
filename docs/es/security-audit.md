@@ -265,7 +265,7 @@ de forma durable** —solo `logger.warning`—; un administrador que suscriba un
 `event_types` hace salir todo el contenido no clasificado y hoy no queda constancia más que en
 logs rotables. Queda pendiente la tabla `webhook_entregas` (append-only). Residuales aceptados del
 limitador: los tokens inválidos no se cachean (una IP puede forzar hasta 1200 validaciones por
-minuto contra auth-service) y el limitador falla abierto sin Redis. Un guardián
+minuto contra auth-service) y la cuota por persona vive en la memoria del proceso, así que se reinicia con él (el límite por IP está en `edge`). Un guardián
 (`shared/tests/test_la_documentacion_dice_lo_que_hay.py`) ata cada una de estas frases al hecho
 del código que la haría falsa.
 

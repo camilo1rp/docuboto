@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
@@ -21,7 +20,6 @@ from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.rbac import resolve_caller_clearance
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.core.dependencies import get_redis
 from document.schemas.anulacion import (
     AnulacionDecision,
     AnulacionPendiente,
@@ -89,13 +87,12 @@ async def aprobar_anulacion(
     payload: AnulacionDecision,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    redis: Any = Depends(get_redis),
 ) -> AnulacionResponse:
     """Aprueba la anulación (paso 2). No-read-up: aprobar la anulación de un
     radicado que no se puede ver sería mutar su ciclo de vida sin autoridad
     (Ley 594/2000 art. 28)."""
     clearance = await resolve_caller_clearance(conn, _actor(request))
-    service = AnulacionService(conn, redis, tenant_slug=_tenant_slug(request))
+    service = AnulacionService(conn, tenant_slug=_tenant_slug(request))
     return await service.aprobar(document_id, payload, _actor(request), clearance)
 
 

@@ -9,7 +9,7 @@
 
 """Tests for MVP-3 dead-letter retention (ADR-021 Fase 4 / Fase 5 Inc.2) — notification-service.
 
-All tests are pure-unit (no real DB or Redis).  The pool, acquire_tenant, and
+All tests are pure-unit (no real DB).  The pool, acquire_tenant, and
 DeadLetterRepository are mocked via patch so that each assertion exercises a
 single behaviour without infrastructure dependencies.
 
@@ -21,14 +21,13 @@ Invariants verified:
   - purge_terminal: raises ValueError for days < 1 (fail-closed guard).
   - purge_deadletter: iterates all active tenants and aggregates counts.
   - purge_deadletter: a failure in one tenant does not abort the others.
-  - Worker cadence: deadletter_retention.run_once fires on the same daily gate
-    as the MVP-1 dedup purge and the MVP-2 DLQ trim.
-  - Worker cadence: a run_once failure logs WARNING and does not crash the loop.
+
+The worker's daily call (and its failure isolation) is covered in
+test_stream_worker.py (`_mantenimiento_diario`).
 """
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -224,68 +223,3 @@ async def test_run_once_uses_configured_days() -> None:
             mock_settings.retention_deadletter_days = 45
             await deadletter_retention.run_once()
         mock_purge.assert_called_once_with(45)
-
-
-# ---------------------------------------------------------------------------
-# Worker cadence gate tests (app/workers/stream_worker.py)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_worker_calls_deadletter_retention_run_once_on_daily_gate() -> None:
-    """MVP-3: deadletter_retention.run_once fires on the same daily gate as MVP-1/MVP-2."""
-    from notification.workers import stream_worker
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [[], asyncio.CancelledError()]
-
-    mock_time = MagicMock()
-    mock_time.monotonic.side_effect = [0.0, stream_worker.RETENTION_INTERVAL + 1.0]
-
-    with (
-        patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("notification.workers.stream_worker.events.reclaim_stale", AsyncMock()),
-        patch("notification.workers.stream_worker.retention.run_once", AsyncMock()),
-        patch("notification.workers.stream_worker.events.trim_deadletter", AsyncMock()),
-        patch(
-            "notification.workers.stream_worker.deadletter_retention.run_once",
-            new_callable=AsyncMock,
-        ) as mock_dlq_retention,
-        patch("notification.workers.stream_worker.time", mock_time),
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await stream_worker.run()
-
-    mock_dlq_retention.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_worker_deadletter_retention_failure_does_not_crash_loop() -> None:
-    """A deadletter_retention.run_once exception logs WARNING; the loop continues
-    (MVP-1 and MVP-2 already ran, and the CancelledError still shuts it down cleanly)."""
-    from notification.workers import stream_worker
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [[], asyncio.CancelledError()]
-
-    mock_time = MagicMock()
-    mock_time.monotonic.side_effect = [0.0, stream_worker.RETENTION_INTERVAL + 1.0]
-
-    with (
-        patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("notification.workers.stream_worker.events.reclaim_stale", AsyncMock()),
-        patch("notification.workers.stream_worker.retention.run_once", AsyncMock()),
-        patch("notification.workers.stream_worker.events.trim_deadletter", AsyncMock()),
-        patch(
-            "notification.workers.stream_worker.deadletter_retention.run_once",
-            AsyncMock(side_effect=RuntimeError("transient DB failure")),
-        ),
-        patch("notification.workers.stream_worker.time", mock_time),
-        patch.object(stream_worker, "logger") as mock_logger,
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await stream_worker.run()
-
-    warning_messages = [call.args[0] for call in mock_logger.warning.call_args_list if call.args]
-    assert any("dead-letter durable" in msg or "dead_letter" in msg for msg in warning_messages)

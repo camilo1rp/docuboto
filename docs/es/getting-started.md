@@ -43,8 +43,8 @@ dominio, más `tests/docuboto/` para la raíz de composición). Desde `services/
 
 Cada dominio corre en **su propia invocación de pytest**: los `conftest` de dominio fijan entorno
 propio, y en una sola sesión el orden de recolección decidiría el resultado. La lista de dominios
-se deriva del árbol. `integration` necesita `DATABASE_URL`, `REDIS_URL` y `RUN_INTEGRATION=1`, y
-recrea la base y vacía Redis antes de cada dominio.
+se deriva del árbol. `integration` necesita `DATABASE_URL` y `RUN_INTEGRATION=1`, y
+recrea la base antes de cada dominio.
 
 Para correr en local lo mismo que `.github/workflows/ci.yml`:
 
@@ -54,7 +54,7 @@ Para correr en local lo mismo que `.github/workflows/ci.yml`:
 ```
 
 `scripts/ci-local.sh` es un espejo de `ci.yml` (si cambia uno, cambia el otro); `integration`
-levanta un PostgreSQL y un Redis desechables. `./scripts/lint.sh` corre ruff y mypy sobre toda
+levanta un PostgreSQL desechable. `./scripts/lint.sh` corre ruff y mypy sobre toda
 la app.
 
 ## URLs de acceso / Access URLs

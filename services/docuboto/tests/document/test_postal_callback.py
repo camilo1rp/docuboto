@@ -31,7 +31,6 @@ from tests.document.app import app
 from tests.document.conftest import (
     TENANT_HEADERS,
     FakeTenantClient,  # type: ignore[attr-defined]
-    _make_fake_redis,
     _make_mock_conn,
     _override_conn,
 )
@@ -93,14 +92,10 @@ class _FakePool:
 
 
 @pytest_asyncio.fixture
-async def callback_ctx():
-    """(client, mock_conn, fake_redis) con app.state.db_pool = pool falso."""
+async def callback_ctx(eventos_publicados):
+    """(client, mock_conn, eventos_publicados) con app.state.db_pool = pool falso."""
     mock_conn = _make_mock_conn()
-    fake_redis = _make_fake_redis()
     _override_conn(mock_conn, FakeTenantClient())
-    from document.core.dependencies import get_redis
-
-    app.dependency_overrides[get_redis] = lambda: fake_redis
     app.state.db_pool = _FakePool(mock_conn)
     # ADR-035: estos tests ejercen el callback, no el estado de la entidad (eso lo
     # cubre `test_estado_entidad_publicas.py`), así que se da por operativa.
@@ -108,7 +103,7 @@ async def callback_ctx():
         "document.core.dependencies.entidad_publica", new=AsyncMock(return_value=True)
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            yield ac, mock_conn, fake_redis
+            yield ac, mock_conn, eventos_publicados
     app.dependency_overrides.clear()
     if hasattr(app.state, "db_pool"):
         delattr(app.state, "db_pool")
@@ -173,7 +168,7 @@ def test_verify_signature_empty_secret() -> None:
 
 @pytest.mark.asyncio
 async def test_callback_applies_valid_transition(callback_ctx) -> None:
-    client, conn, redis = callback_ctx
+    client, conn, eventos = callback_ctx
     body = _body(estado_operador="EN_TRANSITO", event_id="evt-1")
     conn.fetchval.side_effect = [uuid.uuid4(), None]  # delivery_id, prev_hash
     conn.fetchrow.side_effect = [
@@ -186,12 +181,12 @@ async def test_callback_applies_valid_transition(callback_ctx) -> None:
     data = resp.json()
     assert data["status"] == "applied"
     assert data["estado"] == "en_transito"
-    redis.xadd.assert_awaited()  # evento de dominio emitido para E16
+    assert eventos.tipos()  # evento de dominio emitido para E16
 
 
 @pytest.mark.asyncio
 async def test_callback_duplicate_event_is_noop(callback_ctx) -> None:
-    client, conn, redis = callback_ctx
+    client, conn, eventos = callback_ctx
     body = _body(event_id="evt-dup")
     # try_insert_delivery devuelve None → ya procesado
     conn.fetchval.side_effect = [None]
@@ -199,7 +194,7 @@ async def test_callback_duplicate_event_is_noop(callback_ctx) -> None:
     resp = await client.post(_url(), content=body, headers=_hdr(body))
     assert resp.status_code == 200
     assert resp.json()["status"] == "duplicate"
-    redis.xadd.assert_not_awaited()  # duplicado no re-emite
+    assert not eventos  # duplicado no re-emite
 
 
 @pytest.mark.asyncio
@@ -246,7 +241,7 @@ async def test_callback_unknown_guia_404(callback_ctx) -> None:
 
 @pytest.mark.asyncio
 async def test_callback_invalid_transition_recorded_no_change(callback_ctx) -> None:
-    client, conn, redis = callback_ctx
+    client, conn, eventos = callback_ctx
     # operador reporta EN_TRANSITO sobre un envío ya ENTREGADO (terminal)
     body = _body(estado_operador="EN_TRANSITO", event_id="evt-late")
     conn.fetchval.side_effect = [uuid.uuid4(), None]
@@ -256,12 +251,12 @@ async def test_callback_invalid_transition_recorded_no_change(callback_ctx) -> N
     data = resp.json()
     assert data["status"] == "recorded_no_change"
     assert data["estado"] == "entregado"  # no regresa
-    redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
 async def test_callback_devuelto_applies(callback_ctx) -> None:
-    client, conn, redis = callback_ctx
+    client, conn, eventos = callback_ctx
     body = _body(estado_operador="DEVUELTO", event_id="evt-dev", motivo="Dirección errada")
     conn.fetchval.side_effect = [uuid.uuid4(), None]
     conn.fetchrow.side_effect = [

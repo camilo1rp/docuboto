@@ -21,7 +21,6 @@ volumes:
   # cuando la migración a RustFS esté asentada y alguien lo decida a sabiendas.
   minio-data:
   objectstore-data:
-  redis-data:
 
 # Migraciones al arrancar en DESARROLLO (C19, ADR-041, ADR-053): la app
 # espera a `migrate-docuboto`, el único migrador (imagen `app`,
@@ -74,26 +73,6 @@ services:
       test: ["CMD-SHELL", "pg_isready -U orpycamcp -d orpycamcp_db"]
       interval: 5s
       timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-    container_name: orpycamcp-redis
-    ports:
-      # Solo el bucle local, y CON contraseña: en desarrollo Redis guarda los
-      # streams de eventos de la entidad. Abierto y sin credencial, cualquiera en la misma red podía
-      # leerlo o escribirle — que es la puerta de dos hallazgos de esta auditoría.
-      - "127.0.0.1:16379:6379"
-    command: >
-      redis-server --requirepass ${REDIS_PASSWORD:-orpycamcp_redis_dev}
-    volumes:
-      - redis-data:/data
-    networks:
-      - orpycamcp-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-orpycamcp_redis_dev}", "ping"]
-      interval: 5s
-      timeout: 3s
       retries: 5
 
   minio:
@@ -149,8 +128,8 @@ services:
 
   # ─── Aplicación (ADR-047) ─────────────────────────────────────────────────────
   # Un proceso: los nueve paquetes de dominio, sus bucles de fondo y los
-  # consumidores de eventos, y el emisor de identidad (ADR-048). Redis y el
-  # almacén siguen hasta ADR-049/050.
+  # consumidores de eventos sobre PostgreSQL (ADR-049), y el emisor de
+  # identidad (ADR-048). El almacén sigue hasta ADR-050.
 
   app:
     image: orpycamcp/app:dev
@@ -162,7 +141,6 @@ services:
       - "127.0.0.1:19000:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - APP_ENV=development
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.16.0.0/12}
@@ -214,8 +192,6 @@ services:
       migrate-docuboto:
         condition: service_completed_successfully
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       minio:
         condition: service_healthy

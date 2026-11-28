@@ -16,7 +16,10 @@ Una pasada por TODOS los tenants activos que, por cada uno:
 2. reanuda los lotes de radicados `pending`/`processing` que nadie está procesando
    (el servicio se reinició a media carga): el advisory lock por lote evita el doble
    procesamiento entre réplicas, y cada ítem es idempotente (sin doble numeración);
-3. retira los lotes completados sin errores más antiguos que la retención.
+3. retira los lotes completados sin errores más antiguos que la retención;
+4. purga los eventos del bus ya confirmados y más viejos que su retención
+   (`events.purgar`, ADR-049);
+5. aplica los callbacks postales que llegaron con la entidad suspendida.
 
 Un fallo en un tenant (o en una fase) se registra y no frena a los demás; la
 siguiente pasada lo reintenta. Corre al arrancar (tras un breve retraso) y cada
@@ -32,7 +35,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException
-from orpycamcp_common import audit
+from orpycamcp_common import audit, events
 from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.request_log import canal_de_fondo
 from pydantic import ValidationError
@@ -40,7 +43,6 @@ from pydantic import ValidationError
 from docuboto.config import document as settings
 from document.repositories.postal_repository import PostalRepository
 from document.schemas.postal import PostalCallbackPayload
-from document.services import outbox
 from document.services.batch_service import BatchService
 from document.services.import_huerfanos_service import ImportHuerfanosService
 from document.services.postal_service import PostalService
@@ -94,7 +96,7 @@ async def _descartar_diferido(
     )
 
 
-async def drenar_callbacks_diferidos(conn: asyncpg.Connection, slug: str, redis: Any | None) -> int:
+async def drenar_callbacks_diferidos(conn: asyncpg.Connection, slug: str) -> int:
     """Aplica, EN ORDEN DE RECEPCIÓN, los callbacks postales que llegaron con la entidad
     suspendida (B10, ADR-035 §7). Devuelve cuántos quedaron cerrados (procesados o descartados).
 
@@ -118,7 +120,7 @@ async def drenar_callbacks_diferidos(conn: asyncpg.Connection, slug: str, redis:
     cerrados = 0
     try:
         repo = PostalRepository(conn)
-        svc = PostalService(conn, redis=redis, tenant_slug=slug)
+        svc = PostalService(conn, tenant_slug=slug)
         for _ in range(_LOTE_DIFERIDOS):
             fila = None
             try:
@@ -186,8 +188,6 @@ async def drenar_callbacks_diferidos(conn: asyncpg.Connection, slug: str, redis:
                 except Exception:
                     logger.exception("barrido: no se pudo anotar el fallo del diferido %s", fila["id"])
                 break
-            # La tx de la fila ya confirmó: ahora sí sale su evento por el camino rápido.
-            await svc.enviar_pendientes()
     finally:
         await conn.fetchval(
             "SELECT pg_advisory_unlock($1::int, hashtext(current_schema()))", _ESPACIO_LOCK_POSTAL
@@ -195,15 +195,13 @@ async def drenar_callbacks_diferidos(conn: asyncpg.Connection, slug: str, redis:
     return cerrados
 
 
-async def barrer_tenant(
-    slug: str, redis: Any | None = None
-) -> dict[str, int]:
+async def barrer_tenant(slug: str) -> dict[str, int]:
     """Las cinco fases sobre un tenant. Cada una aislada de las otras."""
     resumen = {
         "huerfanos": 0,
         "lotes_reanudados": 0,
         "lotes_retirados": 0,
-        "eventos_reenviados": 0,
+        "eventos_purgados": 0,
         "callbacks_diferidos": 0,
     }
     async with acquire_tenant(slug) as conn:
@@ -238,19 +236,21 @@ async def barrer_tenant(
             raise
         except Exception:
             logger.exception("barrido: retención de lotes falló en tenant=%s", slug)
-        # 4. relé del outbox (AREA-09-05): reenvía los eventos de dominio que el camino
-        #    rápido no pudo publicar (Redis caído justo tras el commit).
-        if redis is not None:
-            try:
-                resumen["eventos_reenviados"] = await outbox.retransmitir(conn, redis)
-            except asyncpg.UndefinedTableError:
-                raise
-            except Exception:
-                logger.exception("barrido: relé del outbox falló en tenant=%s", slug)
+        # 4. caducidad de los eventos del bus (ADR-049): lo confirmado por todos y más
+        #    viejo que la retención. Es también la ventana de los datos personales que
+        #    viajan en el sobre, la misma para todas las entidades.
+        try:
+            resumen["eventos_purgados"] = await events.purgar(
+                conn, dias=settings.eventos_retencion_dias
+            )
+        except asyncpg.UndefinedTableError:
+            raise
+        except Exception:
+            logger.exception("barrido: purga de eventos falló en tenant=%s", slug)
         # 5. callbacks postales recibidos con la entidad suspendida (B10, ADR-035 §7).
         #    Este barrido solo recorre tenants ACTIVOS: reactivarla dispara el drenaje.
         try:
-            resumen["callbacks_diferidos"] = await drenar_callbacks_diferidos(conn, slug, redis)
+            resumen["callbacks_diferidos"] = await drenar_callbacks_diferidos(conn, slug)
         except asyncpg.UndefinedTableError:
             raise
         except Exception:
@@ -258,14 +258,12 @@ async def barrer_tenant(
     return resumen
 
 
-async def barrer_una_vez(
-    redis: Any | None = None
-) -> dict[str, dict[str, int]]:
+async def barrer_una_vez() -> dict[str, dict[str, int]]:
     """Una pasada por todos los tenants activos. Devuelve el resumen por slug."""
     resumen: dict[str, dict[str, int]] = {}
     for slug in await tenants_activos(get_pool()):
         try:
-            resumen[slug] = await barrer_tenant(slug, redis)
+            resumen[slug] = await barrer_tenant(slug)
         except asyncpg.UndefinedTableError:
             # Tenant sin las migraciones de este servicio: nada que barrer.
             logger.debug("barrido: tenant=%s sin tablas de document-service", slug)
@@ -274,13 +272,13 @@ async def barrer_una_vez(
     return resumen
 
 
-async def bucle_de_barrido(redis: Any | None = None) -> None:
+async def bucle_de_barrido() -> None:
     """Tarea de fondo del `lifespan`: espera un poco y barre cada intervalo."""
     canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
     await asyncio.sleep(settings.barrido_retraso_inicial_segundos)
     while True:
         try:
-            await barrer_una_vez(redis)
+            await barrer_una_vez()
         except asyncio.CancelledError:
             raise
         except Exception:

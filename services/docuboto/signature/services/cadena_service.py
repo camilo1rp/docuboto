@@ -60,7 +60,6 @@ from signature.core.huella import (
 )
 from signature.core.otp import generate_otp, hmac_otp, mask_email, send_otp_email, verify_otp
 from signature.core.params_entidad import modo_xades_de_la_entidad
-from signature.core.redis_client import get_redis
 from signature.core.secret_derivation import KEY_VERSION_ACTUAL
 from signature.providers.base import SignedDoc
 from signature.repositories.cadena_repository import CadenaRepository
@@ -1010,23 +1009,15 @@ class CadenaFirmaService:
                     canal=_audit.CANAL_PETICION,
                 )
 
-        # Best-effort event — the challenge is already persisted and the email
-        # already sent; a Redis failure must not undo either (same criterion as
-        # publish_indice_firmado, signature/core/events.py).
-        try:
+            # El evento va en la transacción del challenge (ADR-049). NUNCA incluye
+            # el OTP ni su hash (invariante rector del Inc.2).
             await publish_challenge_emitido(
-                get_redis(),
+                self._conn,
                 tenant_slug=self._tenant_slug,
                 actor=str(actor),
                 challenge_id=str(challenge["challenge_id"]),
                 solicitud_id=str(solicitud_id),
                 expira_at=expira_at.isoformat(),
-            )
-        except Exception:
-            logger.warning(
-                "No se pudo publicar firma.challenge.emitido para challenge_id=%s",
-                challenge["challenge_id"],
-                exc_info=True,
             )
 
         return ChallengeResponse(

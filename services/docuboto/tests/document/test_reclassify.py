@@ -21,7 +21,7 @@ Orden de llamadas a la conexión mockeada por request:
   execute  #N — audit advisory lock (SELECT pg_advisory_xact_lock)  [solo si hay cambio]
   fetchval #2 — audit prev_hash (SELECT hash FROM audit_log)         [solo si hay cambio]
   execute  #N — audit INSERT INTO audit_log                          [solo si hay cambio]
-  redis.xadd  — events.emit best-effort                              [solo si hay cambio]
+  events.emit — en la misma transacción (ADR-049)                    [solo si hay cambio]
 """
 
 from __future__ import annotations
@@ -203,7 +203,7 @@ async def test_reclassify_403_when_nuevo_nivel_exceeds_clearance(
 
 @pytest.mark.asyncio
 async def test_reclassify_success_updates_nivel_and_emits_event(
-    client_with_redis,
+    client_with_eventos,
 ) -> None:
     """clearance=3, nivel_actual=1, nuevo=3 → 200 con nivel_seguridad=3.
 
@@ -211,9 +211,9 @@ async def test_reclassify_success_updates_nivel_and_emits_event(
     - set_classification (UPDATE radicados) invocado.
     - audit.append invocado con action="document.radicado_reclassified"
       y payload {nivel_anterior=1, nivel_nuevo=3, motivo}.
-    - events.emit invocado (redis.xadd llamado una vez).
+    - events.emit invocado una vez, en la conexión del acto.
     """
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
     motivo = "Reclasificación por directivo"
 
     # fetchval: [check_permission(1=True), audit_prev_hash(None)]
@@ -256,8 +256,8 @@ async def test_reclassify_success_updates_nivel_and_emits_event(
     assert audit_payload["nivel_nuevo"] == 3
     assert audit_payload["motivo"] == motivo
 
-    # --- events.emit invocado (best-effort via redis.xadd) ---
-    assert fake_redis.xadd.call_count == 1
+    # --- events.emit invocado en la conexión (la transacción) del acto ---
+    assert [c for c, _s, _e in eventos] == [mock_conn]
 
 
 # ---------------------------------------------------------------------------
@@ -266,13 +266,13 @@ async def test_reclassify_success_updates_nivel_and_emits_event(
 
 
 @pytest.mark.asyncio
-async def test_reclassify_noop_when_nivel_already_matches(client_with_redis) -> None:
+async def test_reclassify_noop_when_nivel_already_matches(client_with_eventos) -> None:
     """nuevo_nivel == nivel_actual → 200 con estado actual, sin audit ni evento.
 
     Seguro para reintentos: la misma request múltiples veces no produce
-    entradas duplicadas en audit_log ni eventos duplicados en Redis.
+    entradas duplicadas en audit_log ni eventos duplicados en el bus.
     """
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
 
     # Solo check_permission (fetchval #1). El audit_prev_hash (#2) NO se llama.
     mock_conn.fetchval.side_effect = [1]
@@ -316,25 +316,28 @@ async def test_reclassify_noop_when_nivel_already_matches(client_with_redis) -> 
     assert len(audit_inserts) == 0
 
     # Ningún evento emitido.
-    assert fake_redis.xadd.call_count == 0
+    assert len(eventos) == 0
 
 
 # ---------------------------------------------------------------------------
-# Case 7 — emit best-effort: si Redis falla, la operación no revienta
+# Case 7 — el evento comparte la suerte de la reclasificación (ADR-049)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_reclassify_succeeds_even_when_redis_emit_fails(
-    client_with_redis,
+async def test_reclassify_falla_entera_si_el_evento_no_se_escribe(
+    client_with_eventos, monkeypatch
 ) -> None:
-    """events.emit lanza excepción → la operación ya se cometió → 200 igual.
+    """El UPDATE, el asiento y el evento van en una transacción: si el evento no se
+    puede escribir, la petición falla — nunca un 1→3 aplicado sin su evento, que es lo
+    único de lo que knowledge deriva el nivel de sus fragmentos."""
+    client, mock_conn, eventos = client_with_eventos
+    from orpycamcp_common import events
 
-    El UPDATE y el audit son atómicos en BD; el evento Redis es best-effort.
-    Una falla de Redis no debe deshacer ni enmascarar la reclasificación.
-    """
-    client, mock_conn, fake_redis = client_with_redis
-    fake_redis.xadd.side_effect = ConnectionError("Redis unavailable")
+    async def _falla(*_a, **_k):
+        raise ConnectionError("la base no responde")
+
+    monkeypatch.setattr(events, "publish", _falla)
 
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [
@@ -342,15 +345,14 @@ async def test_reclassify_succeeds_even_when_redis_emit_fails(
         _sec_ctx(nivel=1),
     ]
 
-    resp = await client.patch(
-        f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 3, "motivo": "Test best-effort", "fundamento_juridico": "Art. 18 Ley 1712", "causal_reserva": "art18_a_intimidad"},
-        headers=TENANT_HEADERS,
-    )
-
-    # La falla de Redis no debe provocar un error HTTP.
-    assert resp.status_code == 200
-    assert resp.json()["nivel_seguridad"] == 3
+    # El transporte de prueba propaga la excepción de la app: en producción es un 500.
+    with pytest.raises(ConnectionError):
+        await client.patch(
+            f"/api/v1/documents/{DOC_ID}/security-level",
+            json={"nivel_seguridad": 3, "motivo": "Sin evento no hay cambio", "fundamento_juridico": "Art. 18 Ley 1712", "causal_reserva": "art18_a_intimidad"},
+            headers=TENANT_HEADERS,
+        )
+    assert not eventos
 
 
 # ---------------------------------------------------------------------------
@@ -436,10 +438,10 @@ async def test_reclassify_422_when_motivo_absent(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_reclassify_compliance_fields_recorded_in_audit(
-    client_with_redis,
+    client_with_eventos,
 ) -> None:
     """causal_reserva, fundamento_juridico, plazo_reserva_meses → presentes en audit_log payload."""
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
 
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [
@@ -512,8 +514,8 @@ def test_reclassify_request_compliance_fields_are_optional() -> None:
 
 
 @pytest.mark.asyncio
-async def test_clasificar_retira_la_publicacion(client_with_redis) -> None:
-    client, mock_conn, _ = client_with_redis
+async def test_clasificar_retira_la_publicacion(client_with_eventos) -> None:
+    client, mock_conn, eventos = client_with_eventos
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3), _sec_ctx(nivel=1)]
 
@@ -539,13 +541,13 @@ async def test_clasificar_retira_la_publicacion(client_with_redis) -> None:
 
 
 @pytest.mark.asyncio
-async def test_desclasificar_no_republica(client_with_redis) -> None:
+async def test_desclasificar_no_republica(client_with_eventos) -> None:
     """La otra mitad: al bajar a nivel público NO se enciende `publicable`.
 
     Sin esta comprobación, "arreglar" el fallo anterior encendiendo la marca al
     desclasificar produciría el mismo defecto con signo contrario.
     """
-    client, mock_conn, _ = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [
         _clearance_row(max_level=3),
@@ -615,8 +617,8 @@ async def test_reclasificar_exige_nivel_de_escritura(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("destino", [1, 2])
-async def test_bajar_desde_nivel_3_es_409_y_no_toca_nada(client_with_redis, destino) -> None:
-    client, mock_conn, fake_redis = client_with_redis
+async def test_bajar_desde_nivel_3_es_409_y_no_toca_nada(client_with_eventos, destino) -> None:
+    client, mock_conn, eventos = client_with_eventos
     mock_conn.fetchval.side_effect = [1]
     mock_conn.fetchrow.side_effect = [
         _clearance_row(max_level=3),
@@ -638,14 +640,14 @@ async def test_bajar_desde_nivel_3_es_409_y_no_toca_nada(client_with_redis, dest
     assert resp.json()["detail"]["error"] == "desclasificacion_requiere_aprobacion"
     assert "desclasificación" in resp.json()["detail"]["detail"]
     assert not [c for c in mock_conn.execute.call_args_list if "UPDATE radicados" in str(c.args[0])]
-    assert fake_redis.xadd.call_count == 0
+    assert len(eventos) == 0
 
 
 @pytest.mark.asyncio
-async def test_bajar_de_2_a_1_sigue_siendo_directo_y_emite_evento(client_with_redis) -> None:
+async def test_bajar_de_2_a_1_sigue_siendo_directo_y_emite_evento(client_with_eventos) -> None:
     """Reservada (art. 19) -> pública: UNA persona, con asiento y evento (decisión del
     usuario: el umbral es NIVEL_DOBLE_FIRMA = 3, no 2)."""
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [
         _clearance_row(max_level=3),
@@ -660,12 +662,12 @@ async def test_bajar_de_2_a_1_sigue_siendo_directo_y_emite_evento(client_with_re
 
     assert resp.status_code == 200
     assert resp.json()["nivel_seguridad"] == 1
-    assert fake_redis.xadd.call_count == 1
+    assert len(eventos) == 1
 
 
 @pytest.mark.asyncio
-async def test_subir_1_a_3_es_directo(client_with_redis) -> None:
-    client, mock_conn, fake_redis = client_with_redis
+async def test_subir_1_a_3_es_directo(client_with_eventos) -> None:
+    client, mock_conn, eventos = client_with_eventos
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3), _sec_ctx(nivel=1)]
 
@@ -681,16 +683,16 @@ async def test_subir_1_a_3_es_directo(client_with_redis) -> None:
     )
 
     assert resp.status_code == 200 and resp.json()["nivel_seguridad"] == 3
-    assert fake_redis.xadd.call_count == 1
+    assert len(eventos) == 1
 
 
 @pytest.mark.asyncio
 async def test_remotivar_al_mismo_nivel_no_emite_evento_ni_reinicia_el_reloj(
-    client_with_redis,
+    client_with_eventos,
 ) -> None:
     """Re-motivación (sacar una fila `por_clasificar` de su limbo): UPDATE de metadata
     SIN `nivel_seguridad` ni `clasificado_at`, asiento propio y SIN evento."""
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [
         _clearance_row(max_level=3),
@@ -718,7 +720,7 @@ async def test_remotivar_al_mismo_nivel_no_emite_evento_ni_reinicia_el_reloj(
         if "audit_log" in str(c.args[0]) and "INSERT" in str(c.args[0])
     ]
     assert acciones == ["document.radicado_remotivado"]
-    assert fake_redis.xadd.call_count == 0
+    assert len(eventos) == 0
 
 
 @pytest.mark.asyncio

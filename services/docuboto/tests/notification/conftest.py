@@ -10,7 +10,7 @@
 """
 Fixtures de notification-service.
 
-La BD (pool + get_tenant_conn + acquire_tenant) y Redis se mockean para correr
+La BD (pool + get_tenant_conn + acquire_tenant) se mockea para correr
 sin infraestructura. El historial se persiste/lee en la BD del tenant (E16).
 """
 
@@ -62,16 +62,6 @@ def _configure_webhook_kek() -> AsyncGenerator[None, None]:
     ) = previos
 
 
-def make_redis_mock() -> MagicMock:
-    mock = MagicMock()
-    mock.ping = AsyncMock()
-    mock.xgroup_create = AsyncMock()
-    mock.xreadgroup = AsyncMock(return_value=None)
-    mock.xack = AsyncMock()
-    mock.aclose = AsyncMock()
-    return mock
-
-
 def make_db_conn() -> AsyncMock:
     conn = AsyncMock()
     conn.execute.return_value = None
@@ -102,28 +92,20 @@ class _FakeAcquire:
 
 
 @pytest.fixture
-def redis_mock() -> MagicMock:
-    return make_redis_mock()
-
-
-@pytest.fixture
 def db_conn() -> AsyncMock:
     return make_db_conn()
 
 
 @pytest.fixture
-def app_with_mocks(redis_mock: MagicMock, db_conn: AsyncMock):
+def app_with_mocks(db_conn: AsyncMock):
     from orpycamcp_common.database import get_tenant_conn
 
     async def _tenant_conn() -> AsyncGenerator[AsyncMock, None]:
         yield db_conn
 
-    with (
-        patch("notification.core.redis_client.get_redis", return_value=redis_mock),
-        patch(
-            "notification.services.notification_service.acquire_tenant",
-            return_value=_FakeAcquire(db_conn),
-        ),
+    with patch(
+        "notification.services.notification_service.acquire_tenant",
+        return_value=_FakeAcquire(db_conn),
     ):
         from orpycamcp_common.usuario import instalar_inyector
 

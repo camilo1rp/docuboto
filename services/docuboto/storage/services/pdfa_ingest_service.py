@@ -161,7 +161,7 @@ async def run_ingest_validation_background(
 ) -> None:
     """Worker ASÍNCRONO best-effort (modo advisory) — programado como
     `fastapi.BackgroundTasks` desde `routers/storage.py::upload_file` (MVP;
-    storage-service no produce Redis Streams hoy, ver docstring del módulo).
+    storage-service no publica eventos hoy, ver docstring del módulo).
 
     **Aislamiento multi-tenant (el punto MÁS sensible, foco del auditor):**
     `tenant_slug` es el MISMO string capturado del header `X-Tenant-Slug` de

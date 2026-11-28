@@ -11,7 +11,7 @@
 """C4/C12 (ADR-039) contra Postgres REAL: lo que un mock no puede decir.
 
 Que el trigger de frontera existe y rechaza, que los CHECK de la tabla de solicitudes rigen, que
-dos aprobaciones concurrentes dan UNA ejecución, que un fallo del asiento o del outbox se
+dos aprobaciones concurrentes dan UNA ejecución, que un fallo del asiento o del evento se
 lleva el nivel, la aprobación y el evento, y que los `WHERE` de la solicitud (separación de
 funciones, vigencia, clearance) son los que deciden — no el diagnóstico.
 
@@ -21,7 +21,7 @@ Mutaciones del diseño (verificadas una por una, ver el informe de la tanda):
  3. quitar `r.nivel_seguridad <= $3` de `aprobar`        -> `test_aprobar_exige_clearance_...`
  4. quitar `s.vence_at > now()` de `aprobar`             -> `test_una_solicitud_vencida_...`
  5. quitar el 409 del PATCH desde 3 / quitar el trigger  -> `test_el_patch_...` / `test_el_trigger_...`
- 6. mover `outbox.encolar` fuera de la tx                -> `test_si_no_se_puede_encolar_...`
+ 6. mover `events.emit` fuera de la tx                   -> `test_si_no_se_puede_encolar_...`
  7. `clasificado_at = now()` incondicional               -> `test_remotivar_...` / `test_set_classification_...`
  8. añadir `tracking_number`/`fundamento` al SELECT      -> `test_el_select_interno_...`
 11. quitar el clearance del WHERE del bloqueo            -> `test_el_patch_con_clearance_2_...`
@@ -112,8 +112,8 @@ async def _solicitud(
     )
 
 
-def _svc(conn, slug, redis=None) -> DesclasificacionService:
-    return DesclasificacionService(conn, slug, redis)
+def _svc(conn, slug) -> DesclasificacionService:
+    return DesclasificacionService(conn, slug)
 
 
 async def _nivel(conn, rid) -> int:
@@ -132,13 +132,13 @@ async def _asientos(conn, slug, rid) -> list[str]:
     ]
 
 
-async def _eventos(conn) -> list[asyncpg.Record]:
-    return list(await conn.fetch("SELECT tipo, dedup_key, payload FROM eventos_salientes ORDER BY id"))
-
-
-class _Redis:
-    async def xadd(self, *a, **k):
-        return b"1-0"
+async def _eventos(conn) -> list[dict]:
+    """`(tipo, dedup_key, payload JSON)` de cada fila de `eventos` (ADR-049), en orden."""
+    filas = await conn.fetch("SELECT sobre FROM eventos ORDER BY seq")
+    planos = [json.loads(f["sobre"]) if isinstance(f["sobre"], str) else dict(f["sobre"]) for f in filas]
+    return [
+        {"tipo": c["event_type"], "dedup_key": c["dedup_key"], "payload": c["payload"]} for c in planos
+    ]
 
 
 # --------------------------------------------------------------------- la frontera (trigger)
@@ -322,7 +322,7 @@ async def test_solicitar_y_aprobar_baja_el_nivel_asienta_dos_veces_y_encola_un_e
 ) -> None:
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn)
-    svc = _svc(conn, slug, _Redis())
+    svc = _svc(conn, slug)
 
     sol = await svc.solicitar(rid, _PEDIDO, ANA)
     assert await _nivel(conn, rid) == 3, "solicitar no baja nada"
@@ -354,7 +354,7 @@ async def test_solicitar_y_aprobar_baja_el_nivel_asienta_dos_veces_y_encola_un_e
 async def test_bajar_a_nivel_2_lleva_la_causal_art19_y_reinicia_el_reloj(tenant_ctx, clearance) -> None:
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn)
-    svc = _svc(conn, slug, _Redis())
+    svc = _svc(conn, slug)
     pedido = DesclasificacionRequest(
         nivel_seguridad=2, motivo="Pasa a reserva temporal", causal_reserva="art19_i_salud_publica",
         fundamento_juridico="Art. 19 lit. i", plazo_reserva_meses=24)
@@ -372,7 +372,7 @@ async def test_bajar_a_nivel_2_lleva_la_causal_art19_y_reinicia_el_reloj(tenant_
 async def test_aprobar_la_propia_es_409_y_no_cambia_nada(tenant_ctx, clearance) -> None:
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn)
-    svc = _svc(conn, slug, _Redis())
+    svc = _svc(conn, slug)
     sol = await svc.solicitar(rid, _PEDIDO, ANA)
     with pytest.raises(HTTPException) as exc:
         await svc.aprobar(sol.id, ANA)
@@ -426,7 +426,7 @@ async def test_una_solicitud_vencida_no_se_aprueba_y_pedir_de_nuevo_la_caduca(
 async def test_rechazar_y_retirar_no_emiten_evento_ni_bajan_el_nivel(tenant_ctx, clearance) -> None:
     slug, conn = await _en(tenant_ctx)
     r1, r2 = await _radicado(conn), await _radicado(conn)
-    svc = _svc(conn, slug, _Redis())
+    svc = _svc(conn, slug)
     s1 = await svc.solicitar(r1, _PEDIDO, ANA)
     rech = await svc.rechazar(s1.id, BETO, "Sigue vigente la causa")
     assert rech.estado == "rechazada" and rech.resolucion_motivo == "Sigue vigente la causa"
@@ -446,14 +446,14 @@ async def test_rechazar_y_retirar_no_emiten_evento_ni_bajan_el_nivel(tenant_ctx,
 async def test_dos_aprobaciones_concurrentes_dan_una_ejecucion(tenant_ctx, clearance) -> None:
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn)
-    sol = await _svc(conn, slug, _Redis()).solicitar(rid, _PEDIDO, ANA)
+    sol = await _svc(conn, slug).solicitar(rid, _PEDIDO, ANA)
 
     otra = await asyncpg.connect(dsn=ic.DSN)
     try:
         await otra.execute(f'SET search_path TO "{tenant_schema(slug)}"')
         resultados = await asyncio.gather(
-            _svc(conn, slug, _Redis()).aprobar(sol.id, BETO),
-            _svc(otra, slug, _Redis()).aprobar(sol.id, CARLA),
+            _svc(conn, slug).aprobar(sol.id, BETO),
+            _svc(otra, slug).aprobar(sol.id, CARLA),
             return_exceptions=True,
         )
     finally:
@@ -495,7 +495,7 @@ async def test_si_falla_el_segundo_asiento_no_queda_ni_nivel_ni_aprobacion_ni_ev
 ) -> None:
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn)
-    svc = _svc(conn, slug, _Redis())
+    svc = _svc(conn, slug)
     sol = await svc.solicitar(rid, _PEDIDO, ANA)
 
     from document.services import desclasificacion_service as mod
@@ -523,16 +523,16 @@ async def test_si_falla_el_segundo_asiento_no_queda_ni_nivel_ni_aprobacion_ni_ev
 async def test_si_no_se_puede_encolar_el_evento_se_revierte_la_aprobacion(
     tenant_ctx, clearance, monkeypatch
 ) -> None:
-    """Mutación 6: `outbox.encolar` fuera de la transacción deja el nivel bajado sin evento."""
+    """Mutación 6: `events.emit` fuera de la transacción deja el nivel bajado sin evento."""
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn)
-    svc = _svc(conn, slug, _Redis())
+    svc = _svc(conn, slug)
     sol = await svc.solicitar(rid, _PEDIDO, ANA)
 
     async def _no_se_puede(*a, **k):
         raise RuntimeError("no se pudo escribir el evento")
 
-    monkeypatch.setattr("document.services.desclasificacion_service.outbox.encolar", _no_se_puede)
+    monkeypatch.setattr("document.services.desclasificacion_service.events.emit", _no_se_puede)
     with pytest.raises(RuntimeError):
         await svc.aprobar(sol.id, BETO)
     assert await _nivel(conn, rid) == 3
@@ -574,7 +574,7 @@ async def test_el_patch_con_clearance_2_sobre_nivel_3_es_404_y_no_409(tenant_ctx
 async def test_bajar_de_2_a_1_es_directo_con_evento(tenant_ctx, clearance) -> None:
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn, nivel=2)
-    res = await DocumentService(conn, slug, redis=_Redis()).reclassify(
+    res = await DocumentService(conn, slug).reclassify(
         rid, nuevo_nivel=1, motivo="Cesó la reserva", actor=BETO)
     assert res["nivel_seguridad"] == 1 and await _nivel(conn, rid) == 1
     (evento,) = await _eventos(conn)
@@ -587,7 +587,7 @@ async def test_remotivar_no_reinicia_el_reloj_ni_emite_evento(tenant_ctx, cleara
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn, nivel=3, causal="por_clasificar")
     antes = await conn.fetchval("SELECT clasificado_at FROM radicados WHERE id = $1", rid)
-    res = await DocumentService(conn, slug, redis=_Redis()).reclassify(
+    res = await DocumentService(conn, slug).reclassify(
         rid, nuevo_nivel=3, motivo="Se motiva lo pendiente", actor=BETO,
         causal_reserva="art18_a_intimidad", fundamento_juridico="Ley 1581 de 2012")
     assert res["nivel_seguridad"] == 3
@@ -598,7 +598,7 @@ async def test_remotivar_no_reinicia_el_reloj_ni_emite_evento(tenant_ctx, cleara
     assert await _eventos(conn) == []
     assert (await _asientos(conn, slug, rid)) == ["document.radicado_remotivado"]
     # repetir lo mismo es un no-op sin asiento
-    await DocumentService(conn, slug, redis=_Redis()).reclassify(
+    await DocumentService(conn, slug).reclassify(
         rid, nuevo_nivel=3, motivo="Se motiva lo pendiente", actor=BETO,
         causal_reserva="art18_a_intimidad", fundamento_juridico="Ley 1581 de 2012")
     assert len(await _asientos(conn, slug, rid)) == 1

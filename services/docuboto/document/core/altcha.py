@@ -9,7 +9,7 @@
 
 """Reto de prueba de trabajo ALTCHA — protocolo v1, en la biblioteca estándar (C16).
 
-Solo cálculo: sin base de datos ni Redis, para poder sustituirlo por el protocolo
+Solo cálculo: sin base de datos ni estado, para poder sustituirlo por el protocolo
 v2 (PBKDF2) el día que el widget suba a 3.x sin tocar a quien lo llama. El
 antirreplay (consumir el reto) vive aparte, en `document/services/antirrobots.py`.
 

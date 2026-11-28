@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -64,14 +65,12 @@ def _parches():
             "document.services.document_service.audit.append",
             AsyncMock(return_value="a" * 32),
         ),
+        # ADR-049: el evento se publica en la tx con `events.emit`.
         patch(
-            "document.services.document_service.outbox.encolar",
-            AsyncMock(return_value={"stream": "s", "event": {}}),
+            "document.services.document_service.events.emit",
+            AsyncMock(return_value={}),
         ),
-        patch(
-            "document.services.document_service.outbox.enviar",
-            AsyncMock(return_value=True),
-        ),
+        nullcontext(),
     )
 
 

@@ -174,15 +174,12 @@ async def test_sign_xml_indice_still_publishes_event_retrocompat(
 
     mock_publish = AsyncMock()
     monkeypatch.setattr("signature.services.signing_service.publish_indice_firmado", mock_publish)
-    # `get_redis()` no está inicializado en el entorno de test (sin lifespan) —
-    # se patchea también para que la llamada llegue a `publish_indice_firmado`
-    # en vez de fallar antes en `get_redis()` (best-effort, capturado por el
-    # mismo `try/except` que protege el evento).
-    monkeypatch.setattr("signature.services.signing_service.get_redis", lambda: object())
 
     resp = await _sign_indice(conn)
     assert resp.status_code == 201
     mock_publish.assert_awaited_once()
+    # ADR-049: se publica con la conexión del acto, dentro de su transacción.
+    assert mock_publish.await_args.args[0] is conn
 
 
 @pytest.mark.asyncio

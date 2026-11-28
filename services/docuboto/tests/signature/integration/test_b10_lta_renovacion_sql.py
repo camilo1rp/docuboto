@@ -246,7 +246,6 @@ async def test_al_quedar_vigente_publica_firma_lta_renovada(tenant_ctx, monkeypa
     _tsa_larga(monkeypatch)
     publicar = AsyncMock()
     monkeypatch.setattr(renovacion_lta, "publish_lta_renovada", publicar)
-    monkeypatch.setattr(renovacion_lta, "get_redis", lambda: object())
 
     storage.renovar.side_effect = storage_api.StorageError("caído")
     await renovacion_lta.renovar_tenant(conn, slug)
@@ -257,6 +256,8 @@ async def test_al_quedar_vigente_publica_firma_lta_renovada(tenant_ctx, monkeypa
     publicar.assert_awaited_once()
     kw = publicar.await_args.kwargs
     assert kw["firma_id"] == str(firma_id) and kw["ordinal"] == 1 and kw["tenant_slug"] == slug
+    # ADR-049: con la conexión del acto, en la transacción que lo deja vigente.
+    assert publicar.await_args.args[0] is conn
 
 
 # --- Correcciones de auditoría B10 (lane L) -------------------------------------------------

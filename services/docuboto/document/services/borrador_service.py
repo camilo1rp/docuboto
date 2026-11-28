@@ -24,7 +24,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException
-from orpycamcp_common import audit
+from orpycamcp_common import audit, events
 
 import signature.api as signature_api_mod
 from document.core.causales_reserva import POR_CLASIFICAR
@@ -44,7 +44,6 @@ from document.schemas.borrador import (
     PlantillaResponse,
 )
 from document.schemas.document import DocumentCreate, DocumentResponse
-from document.services import outbox
 from document.services.contexto_combinacion import ContextoCombinacion
 from storage import api as storage_api
 
@@ -125,10 +124,8 @@ class BorradorService:
         tenant_slug: str = "",
         tenant_client: Any = None,
         signature_api: Any = None,
-        redis: Any = None,
     ) -> None:
         self._conn = conn
-        self._redis = redis
         self._repo = BorradorRepository(conn)
         self._slug = tenant_slug
         self._tenant_client = tenant_client
@@ -439,13 +436,12 @@ class BorradorService:
                 canal=audit.CANAL_PETICION,
             )
             # AREA-09-16 (E23): el evento `documento.contenido_cambiado` nace en la
-            # misma tx que la edición (outbox) y SOLO si la huella del texto cambió,
+            # misma tx que la edición (ADR-049) y SOLO si la huella del texto cambió,
             # por la misma razón que la invalidación de abajo: guardar un cambio de
             # asunto no invalida nada. Es limpieza de bandejas, no una garantía — la
             # garantía síncrona es el 409 `documento_modificado` de signature-service.
-            pendiente = None
             if antes["cuerpo_sha256"] != row["cuerpo_sha256"]:
-                pendiente = await outbox.encolar(
+                await events.emit(
                     self._conn,
                     stream=_STREAM,
                     event_type="documento.contenido_cambiado",
@@ -487,8 +483,6 @@ class BorradorService:
                 tenant_slug=self._slug,
                 cuerpo_sha256_vigente=row["cuerpo_sha256"],
             )
-            if pendiente is not None:
-                await outbox.enviar(self._conn, self._redis, pendiente)
 
         return _bo(row)
 

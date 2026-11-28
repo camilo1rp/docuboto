@@ -9,9 +9,9 @@
 
 """Consumidor ``intelligence-gateway`` (ADR-045, ADR-021).
 
-Lee ``orpycamcp.document.events`` y ``orpycamcp.workflow.events``. Confirma
-el mensaje solo cuando la decisión es cerrada. Un fallo de transporte o de
-base deja el mensaje en la PEL; al quinto intento pasa al dead-letter y a
+Lee ``orpycamcp.document.events`` y ``orpycamcp.workflow.events`` del bus en
+PostgreSQL (ADR-049). Confirma la entrega solo cuando la decisión es cerrada.
+Un fallo de transporte o de base la deja pendiente; a la quinta entrega pasa a
 ``evento_dead_letter``. Cada 30 segundos avanza una página de la carga
 inicial de las entidades con el proveedor encendido, comprueba la
 declaración firmada y reconcilia el libro y una página del inventario.
@@ -22,20 +22,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from typing import Any
 
-import redis.exceptions as redis_exc
 from orpycamcp_common import events
 from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.tenant import slug_valido
 
 from docuboto.config import knowledge as settings
+from docuboto.core import bus
 from knowledge.core import paso
 from knowledge.core.conexion import asegurar
 from knowledge.core.consumidor import CONOCIDOS, atender, cargar_pagina
 from knowledge.core.reconciliacion import reconciliar
-from knowledge.core.redis_client import get_redis
 from knowledge.core.salida_http import TransporteHttp
 
 try:
@@ -51,11 +49,10 @@ logger = logging.getLogger(__name__)
 DOCUMENT_STREAM = "orpycamcp.document.events"
 WORKFLOW_STREAM = "orpycamcp.workflow.events"
 STREAMS = (DOCUMENT_STREAM, WORKFLOW_STREAM)
-DEADLETTER_STREAM = "orpycamcp.knowledge.deadletter"
 GROUP = "intelligence-gateway"
-CONSUMER = events.consumer_name("knowledge-service")
 _SERVICE = "knowledge-service"
-RECLAIM_INTERVAL = 30.0
+#: Cadencia de la carga inicial, la conexión y la reconciliación.
+PERIODO = 30.0
 _ENTIDADES = """
 SELECT slug
   FROM public.tenants
@@ -123,7 +120,7 @@ async def _reconciliar(cliente: Any) -> None:
 
 
 async def _persist_dead_letter(envelope: dict[str, Any], failure_meta: dict[str, Any]) -> None:
-    """Deja el poison pill en ``evento_dead_letter`` antes del ack.
+    """Deja el poison pill en ``evento_dead_letter`` antes de confirmar la entrega.
 
     Sin tenant no hay schema donde escribirlo. Se anota en la auditoría
     pública y se confirma, para no reintentar un sobre que nunca va a
@@ -176,92 +173,41 @@ async def _persist_dead_letter(envelope: dict[str, Any], failure_meta: dict[str,
                 )
 
 
-async def _reclamar(redis: Any, cliente: Any) -> None:
-    async def handler(fields: dict[str, Any]) -> None:
-        await _handle(fields, cliente)
-
-    for stream in STREAMS:
-        await events.reclaim_stale(
-            redis,
-            stream,
-            GROUP,
-            CONSUMER,
-            handler=handler,
-            min_idle_ms=60_000,
-            max_deliveries=5,
-            deadletter_stream=DEADLETTER_STREAM,
-            on_dead_letter=_persist_dead_letter,
-            status_name="intelligence-gateway",
-        )
+async def _periodico(cliente: Any) -> None:
+    """Conexión, una página de carga inicial y reconciliación, cada una aislada."""
+    for nombre, paso_ in (
+        ("la conexión", _conectar),
+        ("la carga inicial", _cargar),
+        ("la reconciliación", _reconciliar),
+    ):
+        try:
+            await paso_(cliente)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("falló %s", nombre, exc_info=True)
 
 
 async def run() -> None:
     """Bucle del consumidor. Cancelar la tarea lo detiene."""
-    redis = get_redis()
     transporte = TransporteHttp()
     cliente = paso.destino_de(settings.ppi_provider_url, transporte)
+
+    async def handler(campos: dict[str, Any]) -> None:
+        await _handle(campos, cliente)
+
+    async def periodico() -> None:
+        await _periodico(cliente)
+
     try:
-        for stream in STREAMS:
-            await events.ensure_group(redis, stream, GROUP)
-        ultima = time.monotonic() - RECLAIM_INTERVAL
-        while True:
-            try:
-                messages: Any = await redis.xreadgroup(
-                    GROUP,
-                    CONSUMER,
-                    {stream: ">" for stream in STREAMS},
-                    count=10,
-                    block=5000,
-                )
-            except asyncio.CancelledError:
-                raise
-            except (TimeoutError, redis_exc.TimeoutError):
-                messages = []
-            except Exception:
-                logger.warning("error en el bucle del consumidor", exc_info=True)
-                await asyncio.sleep(5)
-                messages = []
-
-            for flujo, entries in messages or []:
-                for msg_id, data in entries:
-                    try:
-                        await _handle(data, cliente)
-                        await redis.xack(flujo, GROUP, msg_id)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        await events.record_failure(redis, GROUP, msg_id, exc)
-                        logger.warning(
-                            "el evento queda en la PEL para reintento",
-                            exc_info=True,
-                        )
-
-            ahora = time.monotonic()
-            if ahora - ultima >= RECLAIM_INTERVAL:
-                try:
-                    await _reclamar(redis, cliente)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning("falló el barrido de la PEL", exc_info=True)
-                try:
-                    await _conectar(cliente)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning("falló la conexión", exc_info=True)
-                try:
-                    await _cargar(cliente)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning("falló la carga inicial", exc_info=True)
-                try:
-                    await _reconciliar(cliente)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning("falló la reconciliación", exc_info=True)
-                ultima = ahora
+        await bus.consumir(
+            group=GROUP,
+            streams=STREAMS,
+            handler=handler,
+            on_dead_letter=_persist_dead_letter,
+            status_name="intelligence-gateway",
+            periodico=periodico,
+            intervalo_periodico=PERIODO,
+        )
     finally:
         await transporte.cerrar()

@@ -21,7 +21,7 @@ from orpycamcp_common.database import get_tenant_conn, tenant_schema
 from orpycamcp_common.rbac import resolve_caller_clearance
 from orpycamcp_common.usuario import id_opcional
 
-from document.core.dependencies import get_redis, public_tenant_conn
+from document.core.dependencies import public_tenant_conn
 from document.schemas.postal import (
     CallbackResult,
     CredencialRotacion,
@@ -130,13 +130,12 @@ async def update_estado(
     payload: ShipmentStatusUpdate,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    redis: object = Depends(get_redis),
 ) -> ShipmentResponse:
     # RF-SEG-08 (cierra D-14): la transición manual pasa el clearance del llamante
     # → un envío de radicado sobre-clearance colapsa a 404 (sin read-up en el write).
     clearance = await resolve_caller_clearance(conn, _caller_id(request))
     actor = _caller_id(request)
-    svc = PostalService(conn, redis=redis, tenant_slug=request.headers.get("X-Tenant-Slug"))
+    svc = PostalService(conn, tenant_slug=request.headers.get("X-Tenant-Slug"))
     return await svc.update_estado(shipment_id, payload, clearance, actor)
 
 
@@ -188,7 +187,6 @@ async def postal_callback(
     tenant_slug: str,
     request: Request,
     response: Response,
-    redis: object = Depends(get_redis),
 ) -> CallbackResult:
     """Callback del operador (4-72/Servientrega). Bajo `/api/v1/public/` → el
     gateway NO exige JWT; la autenticación es HMAC per-tenant/per-operador
@@ -203,7 +201,7 @@ async def postal_callback(
     pool: asyncpg.Pool = request.app.state.db_pool
     # Inexistente o sin schema => 404 neutro (ADR-047 §3: sin entidad suspendida).
     async with public_tenant_conn(pool, tenant_slug) as conn:
-        svc = PostalService(conn, redis=redis, tenant_slug=tenant_slug)
+        svc = PostalService(conn, tenant_slug=tenant_slug)
         resultado = await svc.apply_operator_callback(raw, signature, tenant_slug)
     if resultado.status == "deferred":
         response.status_code = status.HTTP_202_ACCEPTED

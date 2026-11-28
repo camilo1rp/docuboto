@@ -26,17 +26,14 @@ Pattern mirrors workflow-service/workflow/workers/document_consumer.py.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 
-import redis.exceptions as redis_exc
 from orpycamcp_common import events
 from orpycamcp_common.database import acquire_tenant
 
 from docuboto.config import signature as settings
+from docuboto.core import bus
 from signature.core.constants import DLQ_GROUP
-from signature.core.redis_client import get_redis
 from signature.jobs import deadletter_retention
 from signature.repositories.cadena_repository import CadenaRepository
 from signature.repositories.dead_letter_repository import DeadLetterRepository
@@ -53,24 +50,14 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 DOCUMENT_STREAM = "orpycamcp.document.events"
-DEADLETTER_STREAM = "orpycamcp.signature.deadletter"
 # Sourced from signature.core.constants (single source of truth shared with
 # app/jobs/deadletter_retention.py and signature/routers/admin_deadletter.py) — see
 # the docstring there for why this can't just be a local literal.
 GROUP = DLQ_GROUP
-CONSUMER = events.consumer_name("signature-service")
 _SERVICE = "signature-service"
 
-# Cadence for the PEL reclaim sweep (seconds).
-# Contract: min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block timeout (5 s)
-# — ensures a healthy consumer processing a message for up to 55 s is never
-# pre-empted by this sweep.
-RECLAIM_INTERVAL = 30.0
-
-# Cadence for the DLQ Redis buffer trim (ADR-021 Fase 4 — MVP-2).
-# Read once at import time so tests can patch the module constant independently
-# of the settings singleton.
-DLQ_TRIM_INTERVAL: float = float(settings.retention_interval_seconds)
+#: Cadencia del mantenimiento diario (retención de dead-letters terminales).
+DLQ_RETENTION_INTERVAL: float = float(settings.retention_interval_seconds)
 
 
 async def apply_reclassification(
@@ -150,7 +137,7 @@ async def apply_contenido_cambiado(
     El evento solo es el DISPARADOR: la huella vigente se pregunta a document-service
     en este momento y se invalida lo que no recae sobre ella, así que ni el orden de
     llegada ni una reentrega cambian el resultado. ``HuellaNoVerificableError`` se
-    propaga a propósito (sin ack → PEL → DLQ).
+    propaga a propósito (sin confirmar → reclamación → DLQ).
 
     Reutilizado por el worker y por el replay de la DLQ (mismo núcleo, igual que
     ``apply_reclassification``). Devuelve las solicitudes invalidadas.
@@ -246,26 +233,26 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
     Writes the dead-letter event atomically to ``evento_dead_letter`` (Postgres)
     and ``audit_log`` **inside a single transaction**.  The callback is passed to
     ``reclaim_stale`` as ``on_dead_letter``; under the new R-4 contract the helper
-    gates the XACK on this callback's success: if this function raises, the message
-    stays in the PEL for the next sweep — there is no dead-letter without a durable
+    gates the confirmation on this callback's success: if this function raises, the
+    delivery stays pending for the next sweep — there is no dead-letter without a durable
     trace.
 
     Edge case — permanently malformed event (no ``tenant_slug``):
         Cannot be written to any tenant schema; retrying forever would create an
         infinite loop.  We log the error and **return normally** so the helper can
-        proceed to XACK (consuming the poison pill).  The Redis DLQ entry produced
-        by the helper before calling this callback remains as the only operational
-        record of this degenerate case.
+        confirm the delivery (consuming the poison pill).  The error log is the only
+        operational record of this degenerate case; the event itself stays in
+        ``eventos`` until the purge.
 
     Idempotency:
         ``INSERT … ON CONFLICT (origin_group, event_id) DO NOTHING RETURNING event_id`` — a
         second call with the same ``event_id`` returns None (no row), and the
-        ``audit_log`` write is skipped.  This prevents a double-trace if XADD
-        succeeded but XACK failed (at-least-once redelivery).
+        ``audit_log`` write is skipped.  This prevents a double-trace if the insert
+        succeeded but the confirmation failed (at-least-once redelivery).
 
     Transient errors (DB down, pool exhausted, etc.):
         Exceptions are **not caught** here.  They propagate to the helper which
-        logs a warning and skips the XACK — the message remains in the PEL and
+        logs a warning and does not confirm — the delivery stays pending and
         will be retried on the next reclaim sweep.  This is what closes R-4.
 
     R-9: ``actor`` is ``"system"`` — the worker performs this act, not the
@@ -283,7 +270,7 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
 
     if not tenant_slug:
         # Permanently malformed: no tenant schema to write to.
-        # Log and return so the helper can XACK the poison pill — retrying
+        # Log and return so the helper can confirm the poison pill — retrying
         # an event without a tenant_slug would loop forever.
         logger.error(
             "Cannot persist dead-letter: envelope missing tenant_slug "
@@ -361,99 +348,17 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
 
 
 async def run() -> None:
-    """Long-running consumer loop. Cancel to shut down cleanly."""
-    redis = get_redis()
-    await events.ensure_group(redis, DOCUMENT_STREAM, GROUP)
+    """Bucle del grupo `signature-service` sobre el bus en PostgreSQL (ADR-049).
 
-    # Track cadence for both the PEL reclaim sweep and the DLQ buffer trim.
-    # A single time.monotonic() call initialises both: _last_reclaim = _last_dlq_trim = t0.
-    # Reclaim fires every RECLAIM_INTERVAL (30 s); DLQ trim fires every DLQ_TRIM_INTERVAL
-    # (default 86 400 s / 24 h).  Deferring the first DLQ trim avoids hitting Redis before
-    # the connection is warm; the daily window is negligible vs. the 30-day horizon.
-    _last_reclaim = _last_dlq_trim = time.monotonic()
-
-    while True:
-        try:
-            messages = await redis.xreadgroup(
-                GROUP, CONSUMER, {DOCUMENT_STREAM: ">"}, count=10, block=5000
-            )
-        except asyncio.CancelledError:
-            raise
-        except (TimeoutError, redis_exc.TimeoutError):
-            # Normal: block= expired with no new entries — not an error; resume immediately.
-            messages = []
-        except Exception:
-            logger.warning("Error en el bucle del consumidor de firma", exc_info=True)
-            await asyncio.sleep(5)
-            messages = []
-
-        for _stream, entries in messages or []:  # type: ignore[misc]
-            for msg_id, msg_data in entries:  # type: ignore[union-attr]
-                try:
-                    await _handle(msg_data)
-                    # A-1: ack ONLY on success — a failed _handle leaves the message
-                    # in the PEL (Pending Entries List) for retry on the next consumer.
-                    await redis.xack(DOCUMENT_STREAM, GROUP, msg_id)
-                except Exception as exc:
-                    # R-5b: recuerda el error para que, si el mensaje queda huérfano, el
-                    # dead-letter lleve la causa y no un texto vacío.
-                    await events.record_failure(redis, GROUP, msg_id, exc)
-                    logger.warning(
-                        "Fallo procesando evento de reclasificación — "
-                        "mensaje permanece en PEL para reintento",
-                        exc_info=True,
-                    )
-
-        # Cadence gates — both share the same `now` snapshot (one monotonic call).
-        now = time.monotonic()
-
-        # PEL reclaim sweep: runs every RECLAIM_INTERVAL (30 s).
-        if now - _last_reclaim >= RECLAIM_INTERVAL:
-            try:
-                await events.reclaim_stale(
-                    redis,
-                    DOCUMENT_STREAM,
-                    GROUP,
-                    CONSUMER,
-                    handler=_handle,
-                    min_idle_ms=60_000,
-                    max_deliveries=5,
-                    deadletter_stream=DEADLETTER_STREAM,
-                    on_dead_letter=_persist_dead_letter,
-                    status_name="signature",
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # A sweep failure must not crash the consumer loop.
-                logger.warning("Fallo en barrido de reclamación", exc_info=True)
-            _last_reclaim = now
-
-        # DLQ buffer trim: runs every DLQ_TRIM_INTERVAL (default 86 400 s / 24 h).
-        # Safe: authoritative copy is in Postgres; entries older than the horizon
-        # are guaranteed already mirrored (ADR-021 Fase 4 — MVP-2).
-        if now - _last_dlq_trim >= DLQ_TRIM_INTERVAL:
-            try:
-                await events.trim_deadletter(
-                    redis,
-                    DEADLETTER_STREAM,
-                    max_age_ms=settings.retention_dlq_days * 86_400_000,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("Fallo en trim del DLQ de firma", exc_info=True)
-            # Purge terminal Postgres dead-letters on the same daily cadence as the
-            # Redis trim (ADR-021 Fase 4 — MVP-3).  Shares the gate to avoid a second
-            # monotonic variable; both are daily housekeeping with no strict ordering
-            # requirement between them.  A failure must not crash the loop or block the
-            # gate (the next daily cycle will retry).
-            try:
-                await deadletter_retention.run_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning(
-                    "Fallo en retención de dead-letters de firma", exc_info=True
-                )
-            _last_dlq_trim = now
+    Confirma solo si `_handle` tuvo éxito; un fallo deja la entrega pendiente
+    para la reclamación, que a la quinta la aparca con `_persist_dead_letter`.
+    """
+    await bus.consumir(
+        group=GROUP,
+        streams=(DOCUMENT_STREAM,),
+        handler=_handle,
+        on_dead_letter=_persist_dead_letter,
+        status_name="signature",
+        periodico=deadletter_retention.run_once,
+        intervalo_periodico=DLQ_RETENTION_INTERVAL,
+    )

@@ -10,7 +10,7 @@
 
 """Desclasificación con segunda persona (C4, ADR-039): orquestación y contrato HTTP.
 
-Con la conexión simulada se prueba QUÉ hace el servicio y en qué orden (asientos, outbox,
+Con la conexión simulada se prueba QUÉ hace el servicio y en qué orden (asientos, evento,
 mapeo de errores, permisos exigidos); las garantías que viven en SQL —los `WHERE`, los CHECK,
 el trigger de frontera, la atomicidad— las prueba, contra Postgres real,
 `tests/integration/test_desclasificacion_integration.py`.
@@ -99,8 +99,9 @@ def _acciones(conn) -> list[str]:
     ]
 
 
-def _outbox(conn) -> list:
-    return [c for c in conn.execute.call_args_list if "eventos_salientes" in str(c.args[0])]
+def _outbox(eventos, conn) -> list:
+    """Eventos publicados EN la conexión del acto (es decir, en su transacción)."""
+    return [e for c, _s, e in eventos if c is conn]
 
 
 def _sql(conn, trozo: str) -> list[str]:
@@ -113,8 +114,8 @@ def _sql(conn, trozo: str) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_solicitar_crea_la_solicitud_la_asienta_y_no_emite_evento(client_with_redis) -> None:
-    client, conn, redis = client_with_redis
+async def test_solicitar_crea_la_solicitud_la_asienta_y_no_emite_evento(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, None]
     conn.fetchrow.side_effect = [
         _clearance(3),
@@ -128,13 +129,13 @@ async def test_solicitar_crea_la_solicitud_la_asienta_y_no_emite_evento(client_w
     assert resp.status_code == 201, resp.text
     assert resp.json()["estado"] == "pendiente" and resp.json()["tracking_number"] == TRACKING
     assert _acciones(conn) == ["document.desclasificacion_solicitada"]
-    assert not _outbox(conn) and redis.xadd.call_count == 0, "solicitar no mueve el acceso: sin evento"
+    assert not _outbox(eventos, conn) and len(eventos) == 0, "solicitar no mueve el acceso: sin evento"
     assert not [c for c in conn.execute.call_args_list if "UPDATE radicados" in str(c.args[0])]
 
 
 @pytest.mark.asyncio
-async def test_solicitar_desde_nivel_2_es_409_use_el_patch(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_solicitar_desde_nivel_2_es_409_use_el_patch(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1]
     conn.fetchrow.side_effect = [_clearance(3), _ctx(2)]
 
@@ -146,8 +147,8 @@ async def test_solicitar_desde_nivel_2_es_409_use_el_patch(client_with_redis) ->
 
 
 @pytest.mark.asyncio
-async def test_solicitar_con_otra_pendiente_es_409(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_solicitar_con_otra_pendiente_es_409(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1]
     conn.fetchrow.side_effect = [_clearance(3), _ctx(3), _fila()]
 
@@ -159,8 +160,8 @@ async def test_solicitar_con_otra_pendiente_es_409(client_with_redis) -> None:
 
 
 @pytest.mark.asyncio
-async def test_solicitar_sin_alcanzar_el_radicado_es_el_404_neutro(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_solicitar_sin_alcanzar_el_radicado_es_el_404_neutro(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1]
     conn.fetchrow.side_effect = [_clearance(2), None]
 
@@ -172,8 +173,8 @@ async def test_solicitar_sin_alcanzar_el_radicado_es_el_404_neutro(client_with_r
 
 
 @pytest.mark.asyncio
-async def test_solicitar_exige_crud_3(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_solicitar_exige_crud_3(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.return_value = None
     await client.post(_RUTA_DOC, json=_PEDIDO, headers=TENANT_HEADERS)
     primera = conn.fetchval.await_args_list[0]
@@ -186,8 +187,8 @@ async def test_solicitar_exige_crud_3(client_with_redis) -> None:
 
 
 @pytest.mark.asyncio
-async def test_aprobar_baja_el_nivel_asienta_dos_veces_y_encola_un_evento(client_with_redis) -> None:
-    client, conn, redis = client_with_redis
+async def test_aprobar_baja_el_nivel_asienta_dos_veces_y_encola_un_evento(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, DOC_ID, None, None]
     conn.fetchrow.side_effect = [
         _clearance(3),
@@ -210,14 +211,14 @@ async def test_aprobar_baja_el_nivel_asienta_dos_veces_y_encola_un_evento(client
     ):
         assert trozo in guarda, f"falta en la guarda de aprobar: {trozo}"
     assert _acciones(conn) == ["document.desclasificacion_aprobada", "document.radicado_reclassified"]
-    assert len(_outbox(conn)) >= 1 and redis.xadd.call_count == 1
+    assert len(_outbox(eventos, conn)) >= 1 and len(eventos) == 1
     bajada = [c for c in conn.execute.call_args_list if "UPDATE radicados" in str(c.args[0])]
     assert len(bajada) == 1 and "AND nivel_seguridad = $3" in str(bajada[0].args[0])
 
 
 @pytest.mark.asyncio
-async def test_aprobar_la_propia_es_409_separacion_de_funciones(client_with_redis) -> None:
-    client, conn, redis = client_with_redis
+async def test_aprobar_la_propia_es_409_separacion_de_funciones(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, DOC_ID]
     conn.fetchrow.side_effect = [
         _clearance(3),
@@ -230,7 +231,7 @@ async def test_aprobar_la_propia_es_409_separacion_de_funciones(client_with_redi
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "separacion_de_funciones"
-    assert not _acciones(conn) and not _outbox(conn) and redis.xadd.call_count == 0
+    assert not _acciones(conn) and not _outbox(eventos, conn) and len(eventos) == 0
     assert not [c for c in conn.execute.call_args_list if "UPDATE radicados" in str(c.args[0])]
     # El diagnóstico también lleva el clearance en el WHERE.
     assert "r.nivel_seguridad <= $2" in _sql(conn, "AS nivel_actual")[0]
@@ -246,8 +247,8 @@ async def test_aprobar_la_propia_es_409_separacion_de_funciones(client_with_redi
         (dict(estado="pendiente", vencida=False), "nivel_cambio"),
     ],
 )
-async def test_aprobar_sin_efecto_explica_por_que(client_with_redis, diag, codigo) -> None:
-    client, conn, _ = client_with_redis
+async def test_aprobar_sin_efecto_explica_por_que(client_with_eventos, diag, codigo) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, DOC_ID]
     conn.fetchrow.side_effect = [
         _clearance(3), _ctx(3), None, _fila(nivel_actual=3, **diag),
@@ -257,12 +258,12 @@ async def test_aprobar_sin_efecto_explica_por_que(client_with_redis, diag, codig
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == codigo
-    assert not _outbox(conn)
+    assert not _outbox(eventos, conn)
 
 
 @pytest.mark.asyncio
-async def test_aprobar_con_clearance_2_es_404_y_no_toca_la_solicitud(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_aprobar_con_clearance_2_es_404_y_no_toca_la_solicitud(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, DOC_ID]
     conn.fetchrow.side_effect = [_clearance(2), None]  # el radicado (nivel 3) no sale
 
@@ -273,8 +274,8 @@ async def test_aprobar_con_clearance_2_es_404_y_no_toca_la_solicitud(client_with
 
 
 @pytest.mark.asyncio
-async def test_aprobar_solicitud_inexistente_es_el_mismo_404(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_aprobar_solicitud_inexistente_es_el_mismo_404(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, None]
     conn.fetchrow.side_effect = [_clearance(3)]
 
@@ -284,8 +285,8 @@ async def test_aprobar_solicitud_inexistente_es_el_mismo_404(client_with_redis) 
 
 
 @pytest.mark.asyncio
-async def test_si_la_bajada_no_aplica_se_revierte_todo(client_with_redis) -> None:
-    client, conn, redis = client_with_redis
+async def test_si_la_bajada_no_aplica_se_revierte_todo(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, DOC_ID]
     conn.fetchrow.side_effect = [
         _clearance(3), _ctx(3),
@@ -296,12 +297,12 @@ async def test_si_la_bajada_no_aplica_se_revierte_todo(client_with_redis) -> Non
     resp = await client.post(f"{_RUTA_COLA}/{SOL_ID}/aprobar", headers=TENANT_HEADERS)
 
     assert resp.status_code == 409 and resp.json()["detail"]["error"] == "nivel_cambio"
-    assert not _acciones(conn) and not _outbox(conn) and redis.xadd.call_count == 0
+    assert not _acciones(conn) and not _outbox(eventos, conn) and len(eventos) == 0
 
 
 @pytest.mark.asyncio
-async def test_aprobar_y_la_cola_exigen_crud_4(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_aprobar_y_la_cola_exigen_crud_4(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.return_value = None
     for metodo, ruta in (("post", f"{_RUTA_COLA}/{SOL_ID}/aprobar"),
                          ("post", f"{_RUTA_COLA}/{SOL_ID}/rechazar"),
@@ -320,8 +321,8 @@ async def test_aprobar_y_la_cola_exigen_crud_4(client_with_redis) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rechazar_asienta_y_no_emite_evento(client_with_redis) -> None:
-    client, conn, redis = client_with_redis
+async def test_rechazar_asienta_y_no_emite_evento(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, DOC_ID, None]
     conn.fetchrow.side_effect = [
         _clearance(3), _ctx(3),
@@ -337,14 +338,14 @@ async def test_rechazar_asienta_y_no_emite_evento(client_with_redis) -> None:
 
     assert resp.status_code == 200 and resp.json()["estado"] == "rechazada"
     assert _acciones(conn) == ["document.desclasificacion_rechazada"]
-    assert not _outbox(conn) and redis.xadd.call_count == 0
+    assert not _outbox(eventos, conn) and len(eventos) == 0
     guarda = _sql(conn, "UPDATE reclasificacion_solicitudes")[0]
     assert "s.solicitado_por <> $2" in guarda and "s.vence_at > now()" in guarda
 
 
 @pytest.mark.asyncio
-async def test_rechazar_pide_motivo_de_10_caracteres(client_with_redis) -> None:
-    client, _, _ = client_with_redis
+async def test_rechazar_pide_motivo_de_10_caracteres(client_with_eventos) -> None:
+    client, _, eventos = client_with_eventos
     resp = await client.post(
         f"{_RUTA_COLA}/{SOL_ID}/rechazar", json={"resolucion_motivo": "no"}, headers=TENANT_HEADERS
     )
@@ -352,8 +353,8 @@ async def test_rechazar_pide_motivo_de_10_caracteres(client_with_redis) -> None:
 
 
 @pytest.mark.asyncio
-async def test_retirar_es_solo_del_solicitante(client_with_redis) -> None:
-    client, conn, redis = client_with_redis
+async def test_retirar_es_solo_del_solicitante(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, DOC_ID]
     conn.fetchrow.side_effect = [
         _clearance(3), _ctx(3), None,
@@ -364,12 +365,12 @@ async def test_retirar_es_solo_del_solicitante(client_with_redis) -> None:
 
     assert resp.status_code == 409 and resp.json()["detail"]["error"] == "solo_el_solicitante"
     assert "s.solicitado_por = $2" in _sql(conn, "UPDATE reclasificacion_solicitudes")[0]
-    assert not _outbox(conn)
+    assert not _outbox(eventos, conn)
 
 
 @pytest.mark.asyncio
-async def test_retirar_la_propia_asienta_sin_evento(client_with_redis) -> None:
-    client, conn, redis = client_with_redis
+async def test_retirar_la_propia_asienta_sin_evento(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, DOC_ID, None]
     conn.fetchrow.side_effect = [
         _clearance(3), _ctx(3),
@@ -381,7 +382,7 @@ async def test_retirar_la_propia_asienta_sin_evento(client_with_redis) -> None:
 
     assert resp.status_code == 200 and resp.json()["estado"] == "retirada"
     assert _acciones(conn) == ["document.desclasificacion_retirada"]
-    assert not _outbox(conn) and redis.xadd.call_count == 0
+    assert not _outbox(eventos, conn) and len(eventos) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -390,9 +391,9 @@ async def test_retirar_la_propia_asienta_sin_evento(client_with_redis) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cola_filas_y_total_comparten_la_condicion_y_el_clearance(client_with_redis) -> None:
+async def test_cola_filas_y_total_comparten_la_condicion_y_el_clearance(client_with_eventos) -> None:
     """Mutación 10 del diseño: contar con otra condición delata solicitudes ajenas."""
-    client, conn, _ = client_with_redis
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, 0]
     conn.fetchrow.side_effect = [_clearance(2)]
     conn.fetch.return_value = []
@@ -411,8 +412,8 @@ async def test_cola_filas_y_total_comparten_la_condicion_y_el_clearance(client_w
 
 
 @pytest.mark.asyncio
-async def test_cola_marca_las_propias(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_cola_marca_las_propias(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1, 1]
     conn.fetchrow.side_effect = [_clearance(3)]
     conn.fetch.return_value = [
@@ -427,8 +428,8 @@ async def test_cola_marca_las_propias(client_with_redis) -> None:
 
 
 @pytest.mark.asyncio
-async def test_historial_lleva_el_clearance_en_el_where(client_with_redis) -> None:
-    client, conn, _ = client_with_redis
+async def test_historial_lleva_el_clearance_en_el_where(client_with_eventos) -> None:
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1]
     conn.fetchrow.side_effect = [_clearance(1)]
     conn.fetch.return_value = []
@@ -479,10 +480,10 @@ def test_el_json_de_auditoria_de_aprobar_no_pierde_a_quien_pidio() -> None:
 
 @pytest.mark.asyncio
 async def test_solicitar_con_destino_reservado_respeta_el_tope_desde_la_generacion(
-    client_with_redis,
+    client_with_eventos,
 ) -> None:
     """3 -> 2 también mide el plazo contra la GENERACIÓN: 2→3→2 no reinicia el reloj."""
-    client, conn, _ = client_with_redis
+    client, conn, eventos = client_with_eventos
     conn.fetchval.side_effect = [1]
     conn.fetchrow.side_effect = [_clearance(3), _ctx(3, meses=170)]
 

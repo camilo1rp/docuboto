@@ -31,6 +31,7 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common import events
 from orpycamcp_common.database import get_vetted_conn as get_db_conn
 from orpycamcp_common.database import tenant_schema
 
@@ -63,16 +64,25 @@ DEP_ARC = (200, "Archivo")
 
 
 @pytest.fixture(autouse=True)
-def _sin_permisos_ni_redis() -> Any:
-    """El RBAC (`check_permission`) y Redis no son el SUT: el permiso se concede y
-    Redis es un mock cuyas llamadas se inspeccionan."""
-    redis = MagicMock()
-    redis.xadd = AsyncMock(return_value="1-0")
+def _sin_permisos_y_bus_grabado() -> Any:
+    """El RBAC (`check_permission`) no es el SUT: el permiso se concede. El bus
+    (ADR-049) es REAL —cada evento se inserta en `eventos` en la transacción del
+    acto—, y además cada publicación pasa por `bus.xadd(stream, campos_planos)`,
+    un doble cuyas llamadas se inspeccionan (y cuyo `side_effect` puede fallar o
+    mirar la base en el instante de publicar)."""
+    bus = MagicMock()
+    bus.xadd = AsyncMock(return_value=None)
+    publicar = events.publish
+
+    async def _publicar(conn: Any, stream: str, event: dict[str, Any]) -> int:
+        await bus.xadd(stream, events.to_fields(event))
+        return await publicar(conn, stream, event)
+
     with (
         patch.object(WorkflowService, "_require_permission", new=AsyncMock(return_value=None)),
-        patch("workflow.services.workflow_service.get_redis", return_value=redis),
+        patch.object(events, "publish", _publicar),
     ):
-        yield redis
+        yield bus
 
 
 class _ServicioConRadicador(WorkflowService):
@@ -183,19 +193,19 @@ async def test_assign_pasa_a_distributed_y_deja_asiento(ctx: Any) -> None:
     assert asiento["payload"]["estado_radicado"] == {"antes": "registered", "despues": "distributed"}
 
 
-async def test_assign_emite_estado_cambiado_tras_commit(ctx: Any, _sin_permisos_ni_redis: Any) -> None:
+async def test_assign_emite_estado_cambiado_en_la_misma_tx(ctx: Any, _sin_permisos_y_bus_grabado: Any) -> None:
     svc, conn, _ = ctx
     rid, actor = await _radicado(conn), await _user(conn)
     await svc.assign(_assign(rid, DEP_JUR[1], None), actor)
 
-    tipos = [c.args[1]["event_type"] for c in _sin_permisos_ni_redis.xadd.call_args_list]
+    tipos = [c.args[1]["event_type"] for c in _sin_permisos_y_bus_grabado.xadd.call_args_list]
     assert tipos == ["workflow.step.created", "workflow.radicado.estado_cambiado"]
-    evt = _sin_permisos_ni_redis.xadd.call_args_list[1].args[1]
+    evt = _sin_permisos_y_bus_grabado.xadd.call_args_list[1].args[1]
     assert evt["dedup_key"].startswith(f"{rid}:distributed:")
 
 
 async def test_fallo_forzado_de_audit_no_deja_ni_paso_ni_estado(
-    ctx: Any, _sin_permisos_ni_redis: Any
+    ctx: Any, _sin_permisos_y_bus_grabado: Any
 ) -> None:
     svc, conn, slug = ctx
     rid, actor = await _radicado(conn), await _user(conn)
@@ -213,7 +223,7 @@ async def test_fallo_forzado_de_audit_no_deja_ni_paso_ni_estado(
     assert await _conteos(conn, slug) == antes
     assert await _estado(conn, rid) == "registered"
     # Y NO se emitió ningún evento (la emisión es posterior al commit).
-    _sin_permisos_ni_redis.xadd.assert_not_awaited()
+    _sin_permisos_y_bus_grabado.xadd.assert_not_awaited()
 
 
 async def test_sincronizar_radicado_inexistente_es_none(ctx: Any) -> None:
@@ -510,11 +520,11 @@ Conexiones = Callable[[], Awaitable[asyncpg.Connection]]
 _EVT_ESTADO = "workflow.radicado.estado_cambiado"
 
 
-def _evt_estado(redis: Any) -> list[dict[str, Any]]:
-    """Eventos `estado_cambiado` que recibió el XADD del doble de Redis, con el
-    payload ya decodificado."""
+def _evt_estado(bus: Any) -> list[dict[str, Any]]:
+    """Eventos `estado_cambiado` que pasaron por el doble del bus, con el payload
+    ya decodificado."""
     out: list[dict[str, Any]] = []
-    for c in redis.xadd.call_args_list:
+    for c in bus.xadd.call_args_list:
         campos = c.args[1]
         if campos["event_type"] == _EVT_ESTADO:
             payload = campos["payload"]
@@ -650,7 +660,7 @@ async def test_http_cerrado_finalizar_y_devolver_404_neutro_rollback_409_no_acti
 
 
 async def test_http_anulado_con_paso_activo_409_radicado_terminal_en_todos_los_actos(
-    http: Any, _sin_permisos_ni_redis: Any
+    http: Any, _sin_permisos_y_bus_grabado: Any
 ) -> None:
     c, conn, slug = http
     svc = _ServicioConRadicador(conn, slug)
@@ -658,7 +668,7 @@ async def test_http_anulado_con_paso_activo_409_radicado_terminal_en_todos_los_a
     # La anulación (document-service) escribe el estado y NO cancela el paso.
     await conn.execute("UPDATE radicados SET status = 'anulado' WHERE id = $1", rid)
     antes = (await _conteos(conn, slug), await _snapshot_pasos(conn))
-    _sin_permisos_ni_redis.xadd.reset_mock()
+    _sin_permisos_y_bus_grabado.xadd.reset_mock()
     cuerpo_paso = {
         "radicado_id": str(rid),
         "tracking_number": "ignorado",
@@ -685,7 +695,7 @@ async def test_http_anulado_con_paso_activo_409_radicado_terminal_en_todos_los_a
 
     assert await _estado(conn, rid) == "anulado"
     # El 409 es terminal también para el bus: ningún evento salió de un acto revertido.
-    _sin_permisos_ni_redis.xadd.assert_not_awaited()
+    _sin_permisos_y_bus_grabado.xadd.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -694,7 +704,7 @@ async def test_http_anulado_con_paso_activo_409_radicado_terminal_en_todos_los_a
 
 
 async def test_carrera_anulacion_vs_assign_no_deja_paso_nuevo_sobre_el_anulado(
-    ctx: Any, nueva_conexion: Conexiones, _sin_permisos_ni_redis: Any
+    ctx: Any, nueva_conexion: Conexiones, _sin_permisos_y_bus_grabado: Any
 ) -> None:
     """La anulación (otra sesión) UPDATEa el radicado y aún no commitea cuando
     `assign` abre su paso. `assign` debe quedar esperando la fila del radicado,
@@ -736,7 +746,7 @@ async def test_carrera_anulacion_vs_assign_no_deja_paso_nuevo_sobre_el_anulado(
     assert await conn.fetchval("SELECT count(*) FROM flow_steps WHERE radicado_id = $1", rid) == 0
     assert await conn.fetchval("SELECT count(*) FROM flow_events WHERE radicado_id = $1", rid) == 0
     assert await _estado(conn, rid) == "anulado"
-    _sin_permisos_ni_redis.xadd.assert_not_awaited()
+    _sin_permisos_y_bus_grabado.xadd.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -744,8 +754,8 @@ async def test_carrera_anulacion_vs_assign_no_deja_paso_nuevo_sobre_el_anulado(
 # ---------------------------------------------------------------------------
 
 
-async def test_estado_cambiado_se_emite_solo_tras_commit_visible_desde_otra_sesion(
-    ctx: Any, nueva_conexion: Conexiones, _sin_permisos_ni_redis: Any
+async def test_estado_cambiado_va_en_la_tx_del_acto_invisible_desde_otra_sesion(
+    ctx: Any, nueva_conexion: Conexiones, _sin_permisos_y_bus_grabado: Any
 ) -> None:
     svc, conn, slug = ctx
     rid, actor = await _radicado(conn), await _user(conn)
@@ -765,17 +775,23 @@ async def test_estado_cambiado_se_emite_solo_tras_commit_visible_desde_otra_sesi
                     ),
                 )
             )
-        return "1-0"
+        return None
 
-    _sin_permisos_ni_redis.xadd.side_effect = _xadd
+    _sin_permisos_y_bus_grabado.xadd.side_effect = _xadd
     await svc.assign(_assign(rid, DEP_JUR[1], None), actor)
 
-    # Al emitir, OTRA sesión ya ve el estado nuevo y el paso: el evento salió tras el COMMIT.
-    assert vistos == [("distributed", 1)]
+    # ADR-049: al publicar, OTRA sesión aún NO ve el cambio — el evento es una fila
+    # de la MISMA transacción. Tras el commit, el cambio y su evento se ven juntos.
+    assert vistos == [("registered", 0)]
+    assert await observador.fetchval(
+        f'SELECT count(*) FROM "{tenant_schema(slug)}".eventos '
+        "WHERE sobre->>'event_type' = $1",
+        _EVT_ESTADO,
+    ) == 1
 
 
 async def test_estado_cambiado_por_cada_acto_y_ninguno_si_no_hay_cambio(
-    ctx: Any, _sin_permisos_ni_redis: Any
+    ctx: Any, _sin_permisos_y_bus_grabado: Any
 ) -> None:
     _, conn, slug = ctx
     rid = await _radicado(conn)
@@ -797,7 +813,7 @@ async def test_estado_cambiado_por_cada_acto_y_ninguno_si_no_hay_cambio(
     await nuevo().execute_transaction(rid, TransactionRequest(tipo_tx="marcar_leido"), miembro)
     await nuevo().finalizar(rid, comentario="Trámite concluido", motivo_cierre="respondido", actor=miembro)  # -> closed
 
-    eventos = _evt_estado(_sin_permisos_ni_redis)
+    eventos = _evt_estado(_sin_permisos_y_bus_grabado)
     assert [(e["payload"]["antes"], e["payload"]["despues"]) for e in eventos] == [
         ("registered", "distributed"),
         ("distributed", "in_progress"),
@@ -815,15 +831,15 @@ async def test_estado_cambiado_por_cada_acto_y_ninguno_si_no_hay_cambio(
         assert await conn.fetchval("SELECT count(*) FROM flow_events WHERE id = $1", fe) == 1
 
 
-async def test_rollback_y_cascada_emiten_estado_cambiado(ctx: Any, _sin_permisos_ni_redis: Any) -> None:
+async def test_rollback_y_cascada_emiten_estado_cambiado(ctx: Any, _sin_permisos_y_bus_grabado: Any) -> None:
     svc, conn, slug = ctx
     rid, u1, u2, _paso = await _circuito_dos_pasos(svc, conn)
     await conn.execute("UPDATE radicados SET status = 'in_progress' WHERE id = $1", rid)
-    _sin_permisos_ni_redis.xadd.reset_mock()
+    _sin_permisos_y_bus_grabado.xadd.reset_mock()
 
     await WorkflowService(conn, slug).rollback(rid, u2, motivo="Asignada por error")
 
-    eventos = _evt_estado(_sin_permisos_ni_redis)
+    eventos = _evt_estado(_sin_permisos_y_bus_grabado)
     assert [(e["payload"]["radicado_id"], e["payload"]["antes"], e["payload"]["despues"]) for e in eventos] == [
         (str(rid), "in_progress", "distributed")
     ]
@@ -833,21 +849,21 @@ async def test_rollback_y_cascada_emiten_estado_cambiado(ctx: Any, _sin_permisos
     await svc.execute_transaction(leido, TransactionRequest(tipo_tx="marcar_leido"), u1)
     sin_leer = await _radicado(conn)
     await svc.assign(_assign(sin_leer, DEP_JUR[1], u1), u1)
-    _sin_permisos_ni_redis.xadd.reset_mock()
+    _sin_permisos_y_bus_grabado.xadd.reset_mock()
 
     await WorkflowService(conn, slug).reassign_cascade(
         from_assigned_to=u1, from_dept=None, to_assigned_to=u2, actor=u1
     )
 
     # Solo cambió de estado el que estaba leído (in_progress -> distributed).
-    eventos = _evt_estado(_sin_permisos_ni_redis)
+    eventos = _evt_estado(_sin_permisos_y_bus_grabado)
     assert [(e["payload"]["radicado_id"], e["payload"]["antes"], e["payload"]["despues"]) for e in eventos] == [
         (str(leido), "in_progress", "distributed")
     ]
 
 
 async def test_estado_cambiado_no_se_emite_si_la_transaccion_revierte(
-    ctx: Any, _sin_permisos_ni_redis: Any
+    ctx: Any, _sin_permisos_y_bus_grabado: Any
 ) -> None:
     """Un fallo DESPUÉS de sincronizar (audit) revierte el acto y no emite nada:
     ni `estado_cambiado` ni `step.created`."""
@@ -862,15 +878,15 @@ async def test_estado_cambiado_no_se_emite_si_la_transaccion_revierte(
         await svc.assign(_assign(rid, DEP_JUR[1], None), actor)
     assert await _conteos(conn, slug) == antes
     assert await _estado(conn, rid) == "registered"
-    _sin_permisos_ni_redis.xadd.assert_not_awaited()
+    _sin_permisos_y_bus_grabado.xadd.assert_not_awaited()
 
     # Con un servicio nuevo (como hace cada request), el acto siguiente emite UN evento: el suyo.
     await _ServicioConRadicador(conn, slug).assign(_assign(rid, DEP_JUR[1], None), actor)
-    assert len(_evt_estado(_sin_permisos_ni_redis)) == 1
+    assert len(_evt_estado(_sin_permisos_y_bus_grabado)) == 1
 
 
 async def test_cambio_de_un_acto_revertido_no_se_emite_en_el_siguiente_acto_de_la_misma_instancia(
-    ctx: Any, _sin_permisos_ni_redis: Any
+    ctx: Any, _sin_permisos_y_bus_grabado: Any
 ) -> None:
     svc, conn, _ = ctx
     rid, actor = await _radicado(conn), await _user(conn)
@@ -882,18 +898,23 @@ async def test_cambio_de_un_acto_revertido_no_se_emite_en_el_siguiente_acto_de_l
 
     await svc.assign(_assign(rid, DEP_JUR[1], None), actor)
 
-    assert len(_evt_estado(_sin_permisos_ni_redis)) == 1
+    assert len(_evt_estado(_sin_permisos_y_bus_grabado)) == 1
 
 
-async def test_fallo_de_redis_no_aborta_el_acto_ya_commiteado(ctx: Any, _sin_permisos_ni_redis: Any) -> None:
-    svc, conn, _ = ctx
+async def test_un_fallo_al_publicar_revierte_el_acto(ctx: Any, _sin_permisos_y_bus_grabado: Any) -> None:
+    """ADR-049: sin evento no hay acto — ni paso, ni estado nuevo, ni evento suelto."""
+    svc, conn, slug = ctx
     rid, actor = await _radicado(conn), await _user(conn)
-    _sin_permisos_ni_redis.xadd.side_effect = ConnectionError("redis caído")
+    _sin_permisos_y_bus_grabado.xadd.side_effect = ConnectionError("la base no responde")
 
-    step = await svc.assign(_assign(rid, DEP_JUR[1], None), actor)
+    with pytest.raises(ConnectionError):
+        await svc.assign(_assign(rid, DEP_JUR[1], None), actor)
 
-    assert step.status == "pending"
-    assert await _estado(conn, rid) == "distributed"
+    assert await _estado(conn, rid) == "registered"
+    assert await conn.fetchval(
+        f'SELECT count(*) FROM "{tenant_schema(slug)}".flow_steps WHERE radicado_id = $1', rid
+    ) == 0
+    assert await conn.fetchval(f'SELECT count(*) FROM "{tenant_schema(slug)}".eventos') == 0
 
 
 # ---------------------------------------------------------------------------

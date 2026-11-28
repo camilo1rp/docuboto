@@ -10,37 +10,39 @@
 """One `/health` and one `/health/ready` for the process (ADR-047).
 
 `/health` has no dependencies: it governs container restarts. `/health/ready`
-decides the 503 on the database and Redis only. Everything the per-domain
-probes used to add is still reported but does not take the process out of
-rotation: the object store, SMTP, next month's `audit_log`
-partition, and each supervised consumer with its dead-letter stream.
+decides the 503 on the database only: events, queues and locks live there too
+(ADR-049). Everything the per-domain probes used to add is still reported but
+does not take the process out of rotation: the object store, SMTP, next month's
+`audit_log` partition, and each supervised consumer with its pending dead-letters.
 """
 
 from __future__ import annotations
 
 import aiosmtplib
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from orpycamcp_common import events
+from orpycamcp_common import deadletter, events, metricas
 from orpycamcp_common import health as health_common
 from orpycamcp_common.database import get_pool
 
 from auth.core.audit_partitions import estado_particion_siguiente
 from docuboto.config import notification as notification_settings
-from notification.workers.stream_worker import DEADLETTER_STREAM as DLQ_NOTIFICATION
-from signature.workers.document_consumer import DEADLETTER_STREAM as DLQ_SIGNATURE
+from knowledge.workers.intelligence_consumer import GROUP as GRUPO_INTELIGENCIA
+from notification.core.constants import DLQ_GROUP as GRUPO_NOTIFICATION
+from signature.core.constants import DLQ_GROUP as GRUPO_SIGNATURE
 from storage.core.minio_client import get_minio
-from workflow.workers.document_consumer import DEADLETTER_STREAM as DLQ_WORKFLOW
+from workflow.core.constants import DLQ_GROUP as GRUPO_WORKFLOW
 
 router = APIRouter(tags=["health"])
 
 _SERVICE = "docuboto"
 
-#: Supervised consumers and their dead-letter streams (`spawn_supervised` names).
+#: Supervised consumers (`spawn_supervised` names) and their consumer groups.
 CONSUMERS = {
-    "workflow": DLQ_WORKFLOW,
-    "notification": DLQ_NOTIFICATION,
-    "signature": DLQ_SIGNATURE,
+    "workflow": GRUPO_WORKFLOW,
+    "notification": GRUPO_NOTIFICATION,
+    "signature": GRUPO_SIGNATURE,
+    "intelligence-gateway": GRUPO_INTELIGENCIA,
 }
 
 
@@ -52,17 +54,6 @@ async def health() -> dict[str, str]:
 async def _ping_db() -> None:
     async with get_pool().acquire() as conn:
         await conn.fetchval("SELECT 1")
-
-
-def _redis(request: Request):  # noqa: ANN202 — redis.asyncio.Redis | None
-    return getattr(request.app.state, "redis", None)
-
-
-async def _ping_redis(request: Request) -> None:
-    redis = _redis(request)
-    if redis is None:
-        raise RuntimeError("redis")
-    await redis.ping()
 
 
 async def _ping_storage() -> None:
@@ -87,29 +78,39 @@ async def _audit_particiones() -> str:
         return "unknown"
 
 
-async def _consumidores(request: Request) -> dict[str, object]:
+async def _dlq_pendientes(grupo: str) -> int | None:
+    """Dead-letters `pending` del grupo, sumados sobre las entidades. None si no se pudo."""
+    try:
+        async with get_pool().acquire() as conn:
+            n, _ = await deadletter.contar_pendientes(
+                conn, await metricas.esquemas_a_medir(conn), [grupo]
+            )
+        return n
+    except Exception:  # noqa: BLE001 — una sonda informativa no tumba /health/ready
+        return None
+
+
+async def _consumidores() -> dict[str, object]:
     """Estado y DLQ de cada consumidor que arrancó. Informa, no decide el 503."""
     informes: dict[str, object] = {}
     estados = events.consumer_status()
-    redis = _redis(request)
-    for nombre, stream in CONSUMERS.items():
+    for nombre, grupo in CONSUMERS.items():
         estado = estados.get(nombre)
         if estado is None:
             continue
-        informe: dict[str, object] = {"consumer": "ok" if estado["corriendo"] else "reiniciando"}
-        if redis is not None:
-            dlq = await health_common.consumer_report(redis, estado, stream)
-            informe["dead_letter"] = dlq["dead_letter"]
-            informe["detalle"] = dlq["detalle"]
-        informes[nombre] = informe
+        dlq = health_common.consumer_report(estado, await _dlq_pendientes(grupo))
+        informes[nombre] = {
+            "consumer": "ok" if estado["corriendo"] else "reiniciando",
+            "dead_letter": dlq["dead_letter"],
+            "detalle": dlq["detalle"],
+        }
     return informes
 
 
 @router.get("/health/ready", summary="Disponibilidad — ¿puede atender tráfico ahora?")
-async def ready(request: Request) -> JSONResponse:
+async def ready() -> JSONResponse:
     checks = {
         "database": await health_common.check("database", _ping_db),
-        "redis": await health_common.check("redis", lambda: _ping_redis(request)),
     }
     listo = all(v == "ok" for v in checks.values())
     informativos = {
@@ -119,7 +120,7 @@ async def ready(request: Request) -> JSONResponse:
     content: dict[str, object] = {
         "status": "ready" if listo else "not_ready",
         "checks": {**checks, **informativos},
-        "consumers": await _consumidores(request),
+        "consumers": await _consumidores(),
     }
     if checks["database"] == "ok":
         particiones = await _audit_particiones()

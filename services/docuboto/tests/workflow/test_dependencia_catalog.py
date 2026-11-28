@@ -70,7 +70,7 @@ async def test_assign_codigo_desconocido_422_sin_fila(
 ) -> None:
     """Un código sin dependencia ACTIVA → 422 `dependencia_desconocida`, y NINGUNA fila
     llega a escribirse en `flow_steps` (se corta antes de `get_next_step_number`)."""
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     # 1) require_permission; 2) get_radicado_tracking_number; 3) dependencia_activa → None
     mock_conn.fetchval.side_effect = [1, TRACKING_NUMBER, None]
 
@@ -83,7 +83,7 @@ async def test_assign_codigo_desconocido_422_sin_fila(
     assert body["detail"]["error"] == "dependencia_desconocida"
     assert body["detail"]["field"] == "to_dept"
     mock_conn.fetchrow.assert_not_awaited()  # ni INSERT INTO flow_steps
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
@@ -92,21 +92,21 @@ async def test_assign_codigo_inactivo_se_trata_como_inexistente(
 ) -> None:
     """`dependencia_activa` filtra `activo = TRUE`: inactiva e inexistente son lo mismo
     para el servicio (nadie tiene URD activa en ella, el paso quedaría invisible)."""
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     mock_conn.fetchval.side_effect = [1, TRACKING_NUMBER, None]
     response = await client.post(
         "/api/v1/workflows/assign", json=_ASSIGN_PAYLOAD, headers=TENANT_HEADERS
     )
     assert response.status_code == 422
     assert response.json()["detail"]["error"] == "dependencia_desconocida"
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
 async def test_transfer_codigo_desconocido_422_sin_fila(
     client_with_conn: tuple[AsyncClient, object, object],
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     mock_conn.fetchval.side_effect = [1, TRACKING_NUMBER, None]
     response = await client.post(
         "/api/v1/workflows/transfer", json=_TRANSFER_PAYLOAD, headers=TENANT_HEADERS
@@ -114,7 +114,7 @@ async def test_transfer_codigo_desconocido_422_sin_fila(
     assert response.status_code == 422
     assert response.json()["detail"]["error"] == "dependencia_desconocida"
     mock_conn.fetchrow.assert_not_awaited()
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_sin_destino_422_de_esquema(
 async def test_assign_por_codigo_guarda_el_nombre_del_catalogo_y_no_marca_deprecacion(
     client_with_conn: tuple[AsyncClient, object, object],
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     # 1) require_permission; 2) tracking; 3) dependencia_activa → nombre del catálogo;
     # 4) get_next_step_number; 5) prev_hash de la auditoría
     mock_conn.fetchval.side_effect = [1, TRACKING_NUMBER, "Dirección Jurídica", 1, None]
@@ -154,7 +154,7 @@ async def test_assign_por_codigo_guarda_el_nombre_del_catalogo_y_no_marca_deprec
     assert "Dirección Jurídica" in insert.args and 4 in insert.args
     body = response.json()
     assert (body["to_dept"], body["to_dept_code"]) == ("Dirección Jurídica", 4)
-    mock_redis.xadd.assert_awaited_once()
+    assert len(eventos) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +191,7 @@ async def test_alias_ambiguo_422_y_no_se_escribe_nada(
     client_with_conn: tuple[AsyncClient, object, object],
 ) -> None:
     """Dos dependencias con ese nombre: NO se elige la de menor código."""
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     payload = {k: v for k, v in _ASSIGN_PAYLOAD.items() if k != "to_dept_code"}
     payload["to_dept"] = "Archivo"
     mock_conn.fetchval.side_effect = [1, TRACKING_NUMBER]
@@ -203,7 +203,7 @@ async def test_alias_ambiguo_422_y_no_se_escribe_nada(
     detail = response.json()["detail"]
     assert detail["error"] == "dependencia_ambigua" and detail["candidatos"] == 2
     assert not any("INSERT INTO flow_steps" in c.args[0] for c in mock_conn.fetchrow.await_args_list)
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
@@ -263,7 +263,7 @@ async def test_origen_afirmado_que_ya_no_coincide_409(
 ) -> None:
     """Control optimista: el cliente vio el radicado en la dependencia 9 y ya está en la 4.
     Mutación: confiar en el `from_dept_code` del cliente (o ignorarlo) deja 201."""
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     mock_conn.fetchval.side_effect = [1, TRACKING_NUMBER, "Secretaría General"]
     payload = {**_TRANSFER_PAYLOAD, "from_dept_code": 9}
     with patch(f"{_REPO}.paso_activo", new=AsyncMock(return_value=_activo(codigo=4))):
@@ -271,7 +271,7 @@ async def test_origen_afirmado_que_ya_no_coincide_409(
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "origen_desactualizado"
     assert not any("INSERT INTO flow_steps" in c.args[0] for c in mock_conn.fetchrow.await_args_list)
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio

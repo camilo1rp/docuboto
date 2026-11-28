@@ -32,7 +32,7 @@
 # ## Qué DESTRUYE
 #
 # `docker compose down -v` borra los volúmenes: Postgres (con las personas y
-# las claves de firma de los JWT), MinIO y Redis.
+# las claves de firma de los JWT, y el bus de eventos) y MinIO.
 # Todo lo que hubiera en la instalación se pierde. Por eso pide confirmación
 # tecleada y no acepta un simple «sí»: la frase nombra el acto.
 #
@@ -77,7 +77,7 @@ if [[ "$CONFIRMADO" -ne 1 ]]; then
   cat <<'AVISO'
 
   ┌──────────────────────────────────────────────────────────────────────┐
-  │  Esto DESTRUYE los volúmenes de Postgres, MinIO y Redis.             │
+  │  Esto DESTRUYE los volúmenes de Postgres y MinIO.                    │
   │  Se pierde todo: documentos, expedientes, usuarios y el audit_log.   │
   │  Es irreversible y no hay copia.                                     │
   └──────────────────────────────────────────────────────────────────────┘

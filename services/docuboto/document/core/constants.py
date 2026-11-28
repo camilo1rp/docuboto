@@ -24,3 +24,8 @@ acto en el momento de la reanudación.
 import uuid
 
 SYSTEM_RECONCILER_ID = uuid.UUID("00000000-0000-0000-0000-000000005ec1")
+
+
+#: Tipos de evento del stream de document que más de un módulo nombra.
+RECLASIFICADO = "document.radicado.reclassified"
+VENCIMIENTO_CAMBIADO = "document.radicado.due_date_changed"

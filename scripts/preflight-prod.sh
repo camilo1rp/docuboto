@@ -10,14 +10,14 @@
 #
 # preflight-prod.sh — la parte del checklist de seguridad del despliegue que NO se
 # puede verificar en el repositorio (AREA-13-11): lo que depende del HOST. Lo que sí
-# se puede (sin `ports:`, Redis con contraseña, credenciales obligatorias, imágenes
+# se puede (sin `ports:`, credenciales obligatorias, imágenes
 # fijadas) lo vigila `shared/tests/test_manifiesto_prod_seguro.py` en cada push.
 #
 # Uso, DESDE FUERA del servidor (otra máquina de la red o de Internet):
 #     scripts/preflight-prod.sh sgd.entidad.gov.co
 #
 # Comprueba: (1) TLS válido y HTTP redirige a HTTPS; (2) los puertos internos
-# (PostgreSQL 5432, Redis 6379, almacén de objetos 9000/9001, servicios 8001-8012)
+# (PostgreSQL 5432, almacén de objetos 9000/9001, servicios 8001-8012)
 # NO responden desde fuera. Solo LEE: no escribe nada ni modifica el host. El
 # audit de PostgreSQL y la rotación de credenciales siguen siendo manuales
 # (docs/es/deployment.md).
@@ -47,7 +47,7 @@ case "$CODIGO" in
 esac
 
 echo "── Puertos internos (no deben responder desde fuera)"
-for PUERTO in 5432 6379 9000 9001 8001 8002 8003 8004 8005 8006 8007 8008 8009 8011 8012; do
+for PUERTO in 5432 9000 9001 8001 8002 8003 8004 8005 8006 8007 8008 8009 8011 8012; do
     if (exec 3<>"/dev/tcp/$HOST/$PUERTO") 2>/dev/null; then
         fallo "el puerto $PUERTO está ABIERTO en $HOST"
     else

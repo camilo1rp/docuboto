@@ -33,10 +33,11 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException
-from orpycamcp_common import audit
+from orpycamcp_common import audit, events
 from orpycamcp_common.rbac import resolve_caller_clearance
 
 from document.core.causales_reserva import NIVEL_DOBLE_FIRMA, tope_reserva
+from document.core.constants import RECLASIFICADO
 from document.repositories.document_repository import DocumentRepository
 from document.repositories.reclasificacion_repository import ReclasificacionRepository
 from document.schemas.desclasificacion import (
@@ -45,7 +46,6 @@ from document.schemas.desclasificacion import (
     DesclasificacionRequest,
     DesclasificacionResponse,
 )
-from document.services import outbox
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +66,12 @@ def _no_encontrado(clave: object) -> HTTPException:
 
 class DesclasificacionService:
     def __init__(
-        self, conn: asyncpg.Connection, tenant_slug: str, redis: Any | None = None
+        self, conn: asyncpg.Connection, tenant_slug: str
     ) -> None:
         self._conn = conn
         self._slug = tenant_slug
         self._repo = ReclasificacionRepository(conn)
         self._docs = DocumentRepository(conn, tenant_slug)
-        self._redis = redis
 
     # ---- helpers ----------------------------------------------------------------
 
@@ -259,10 +258,10 @@ class DesclasificacionService:
                 payload={**payload, "nivel_anterior": fila["nivel_anterior"],
                          "nivel_nuevo": fila["nivel_nuevo"], "motivo": fila["motivo"]},
             )
-            pendiente = await outbox.encolar(
+            await events.emit(
                 self._conn,
                 stream=_STREAM,
-                event_type=outbox.RECLASIFICADO,
+                event_type=RECLASIFICADO,
                 tenant_slug=self._slug,
                 actor=str(aprobador),
                 dedup_key=f"{ctx['tracking_number']}:{fila['nivel_nuevo']}:{solicitud_id}",
@@ -279,7 +278,6 @@ class DesclasificacionService:
                     "aprobado_por": str(aprobador),
                 },
             )
-        await outbox.enviar(self._conn, self._redis, pendiente)
         return DesclasificacionAprobada(
             **dict(fila),
             tracking_number=ctx["tracking_number"],

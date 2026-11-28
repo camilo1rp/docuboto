@@ -14,7 +14,7 @@ cosas:
 
 * **Cuota por persona** (`UserRateLimitMiddleware`, AREA-02-01): nginx no sabe
   quién es nadie, y el cubo por IP junta a toda una oficina detrás de un NAT. Un
-  solo proceso: la ventana vive en memoria, sin Redis.
+  solo proceso: la ventana vive en memoria, sin almacén externo.
 
 * **`X-Request-Id`** antes que nada: se acepta el del cliente si es sano (el SSR
   continúa la petición del navegador y la traza no debe partirse en ese salto)

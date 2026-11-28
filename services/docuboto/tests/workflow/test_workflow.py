@@ -10,7 +10,7 @@
 """
 Tests for workflow-service endpoints.
 
-DB and Redis are fully mocked — no real infrastructure required.
+DB is mocked and bus publishing is recorded — no real infrastructure required.
 
 Repository call sequence for ASSIGN / TRANSFER:
   1. fetchval  — SET search_path + tracking_number lookup on `radicados`
@@ -87,7 +87,7 @@ _TRANSFER_PAYLOAD = {
 async def test_assign_radicado(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     record = make_step_record(step_id=STEP_ID, action="assign")
     mock_conn.fetchval.return_value = 1
     mock_conn.fetchrow.return_value = record
@@ -104,8 +104,10 @@ async def test_assign_radicado(
     assert body["tracking_number"] == TRACKING_NUMBER
     assert body["action"] == "assign"
     assert body["status"] == "pending"
-    mock_redis.xadd.assert_awaited_once()
-    args = mock_redis.xadd.call_args[0]
+    assert len(eventos) == 1
+    # ADR-049: publicado sobre la conexión del acto, en su transacción.
+    assert eventos.conexiones() == [mock_conn]
+    args = eventos.ultima()
     assert args[0] == "orpycamcp.workflow.events"
     # Sobre canónico (orpycamcp_common): event_type + tenant_slug a nivel superior.
     assert args[1]["event_type"] == "workflow.step.created"
@@ -170,7 +172,7 @@ async def test_assign_radicado_inexistente_404(
 ) -> None:
     """`radicado_id` sin fila en `radicados` → 404 `radicado_not_found`, y no
     queda ninguna fila creada en `flow_steps` (se corta antes de la tx)."""
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     # 1) require_permission (PERM_TRAMITAR) → True; 2) get_radicado_tracking_number → None
     mock_conn.fetchval.side_effect = [1, None]
 
@@ -183,7 +185,7 @@ async def test_assign_radicado_inexistente_404(
     assert response.status_code == 404
     assert response.json()["detail"]["error"] == "radicado_not_found"
     mock_conn.fetchrow.assert_not_awaited()  # ni INSERT INTO flow_steps
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
@@ -269,7 +271,7 @@ async def test_assign_action_falsificado_se_ignora(
 async def test_transfer_radicado(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     record = make_step_record(
         step_id=STEP_ID,
         step_number=2,
@@ -294,7 +296,7 @@ async def test_transfer_radicado(
     assert body["to_dept"] == "Secretaría General"
     # complete_active_step must have been called (execute for UPDATE)
     mock_conn.execute.assert_awaited()
-    mock_redis.xadd.assert_awaited_once()
+    assert len(eventos) == 1
 
 
 @pytest.mark.asyncio
@@ -466,7 +468,7 @@ async def test_complete_step(
 ) -> None:
     """Control positivo: cerrar el paso propio (assigned_to == actor) sigue
     funcionando tras anclar la autorización en el `UPDATE` (Bloqueantes 1+2)."""
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     record = make_step_record(step_id=STEP_ID, step_status="completed", assigned_to=USER_ID)
     mock_conn.fetchrow.return_value = record
 
@@ -480,8 +482,8 @@ async def test_complete_step(
     body = response.json()
     assert body["id"] == str(STEP_ID)
     assert body["status"] == "completed"
-    mock_redis.xadd.assert_awaited_once()
-    args = mock_redis.xadd.call_args[0]
+    assert len(eventos) == 1
+    args = eventos.ultima()
     assert args[1]["event_type"] == "workflow.step.completed"
 
     # El `UPDATE` ancla la autorización por tenencia en el MISMO statement —sin
@@ -523,7 +525,7 @@ async def test_complete_step_paso_ajeno_404(
     """Cerrar el paso de OTRA dependencia (el `WHERE` no casa `assigned_to`) es
     byte-a-byte indistinguible de "no existe": mismo 404 `step_not_found`
     (no-oráculo, gemelo de rollback/devolver)."""
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     # 1) `get_by_id` (resuelve el radicado para el cerrojo, ADR-028) -> el paso
     # existe; 2) el `UPDATE` anclado a la tenencia no matchea -> None.
     mock_conn.fetchrow.side_effect = [make_step_record(step_id=STEP_ID), None]
@@ -537,7 +539,7 @@ async def test_complete_step_paso_ajeno_404(
     assert response.status_code == 404
     assert response.json()["detail"]["error"] == "step_not_found"
     # El paso no cambia: ni el evento append-only ni la traza forense se escriben.
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos
     assert not any(
         "INSERT INTO flow_events" in c.args[0] for c in mock_conn.execute.await_args_list
     )
@@ -553,7 +555,7 @@ async def test_complete_step_dependencia_sin_dueno_ok(
     """Un paso de dependencia SIN dueño (`assigned_to IS NULL`, generado por
     `apply_devolucion`) sigue siendo cerrable por quien tramita: no se rompe
     ese caso legítimo al anclar la autorización en el UPDATE."""
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     record = make_step_record(step_id=STEP_ID, step_status="completed")
     record["assigned_to"] = None  # make_step_record's `or` no deja pasar None directo
     mock_conn.fetchrow.return_value = record
@@ -565,7 +567,7 @@ async def test_complete_step_dependencia_sin_dueno_ok(
     )
 
     assert response.status_code == 200
-    mock_redis.xadd.assert_awaited_once()
+    assert len(eventos) == 1
     update_calls = [
         c for c in mock_conn.fetchrow.await_args_list if "UPDATE flow_steps" in c.args[0]
     ]
@@ -995,7 +997,7 @@ async def test_inbox_semaforo_vencido(
 async def test_scan_overdue_emits_and_marks(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     past = datetime.now(tz=UTC) - timedelta(days=1)
     # list_overdue_unnotified → 1 paso vencido; mark_overdue_notified → execute
     mock_conn.fetch.return_value = [make_step_record(due_at=past)]
@@ -1003,8 +1005,8 @@ async def test_scan_overdue_emits_and_marks(
     response = await client.post("/api/v1/workflows/overdue/scan", headers=TENANT_HEADERS)
     assert response.status_code == 200
     assert response.json()["alerted"] == 1
-    mock_redis.xadd.assert_awaited()
-    args = mock_redis.xadd.call_args[0]
+    assert eventos
+    args = eventos.ultima()
     assert args[0] == "orpycamcp.workflow.events"
     assert args[1]["event_type"] == "workflow.step.overdue"
 
@@ -1523,7 +1525,6 @@ async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
     emit = AsyncMock()
     with (
         patch("workflow.services.workflow_service.events.emit", emit),
-        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
         patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=3)),
     ):
         await svc._publish("workflow.step.created", step)
@@ -1534,7 +1535,6 @@ async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
     emit.reset_mock()
     with (
         patch("workflow.services.workflow_service.events.emit", emit),
-        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
         patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=None)),
     ):
         await svc._publish("workflow.step.created", step)
@@ -1542,14 +1542,17 @@ async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
 
 
 @pytest.mark.asyncio
-async def test_un_fallo_al_publicar_queda_registrado_y_no_revierte() -> None:
-    """Redis caído no deshace el paso, y el fallo no puede desaparecer."""
+async def test_un_fallo_al_publicar_revierte_el_acto() -> None:
+    """ADR-049: el evento es una fila de la transacción del acto. Si no se puede
+    escribir, el fallo sube y la transacción del llamante revierte — no hay paso
+    sin evento ni evento sin paso."""
     from types import SimpleNamespace
     from unittest.mock import patch
 
     from workflow.services.workflow_service import WorkflowService
 
-    svc = WorkflowService(AsyncMock(), "demo")
+    conn = AsyncMock()
+    svc = WorkflowService(conn, "demo")
     step = SimpleNamespace(
         id=uuid.uuid4(),
         radicado_id=uuid.uuid4(),
@@ -1563,18 +1566,15 @@ async def test_un_fallo_al_publicar_queda_registrado_y_no_revierte() -> None:
         status="pending",
         assigned_by=None,
     )
+    emit = AsyncMock(side_effect=ConnectionError("la base no responde"))
     with (
-        patch(
-            "workflow.services.workflow_service.events.emit",
-            AsyncMock(side_effect=ConnectionError("redis caído")),
-        ),
-        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch("workflow.services.workflow_service.events.emit", emit),
         patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=1)),
-        patch("workflow.services.workflow_service.logger") as log,
+        pytest.raises(ConnectionError),
     ):
         await svc._publish("workflow.step.created", step)
-    log.warning.assert_called_once()
-    assert log.warning.call_args.kwargs["exc_info"] is True
+    # Se publicó sobre la conexión del acto, no sobre otra.
+    assert emit.await_args.args[0] is conn
 
 
 @pytest.mark.asyncio
@@ -1585,7 +1585,9 @@ async def test_estado_cambiado_y_overdue_declaran_nivel_seguridad() -> None:
 
     from workflow.services.workflow_service import WorkflowService
 
-    svc = WorkflowService(AsyncMock(), "demo")
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    svc = WorkflowService(conn, "demo")
     rid = uuid.uuid4()
     emit = AsyncMock()
     svc._cambios = [
@@ -1599,7 +1601,6 @@ async def test_estado_cambiado_y_overdue_declaran_nivel_seguridad() -> None:
     )
     with (
         patch("workflow.services.workflow_service.events.emit", emit),
-        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
         patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=2)),
         patch.object(svc._repo, "list_overdue_unnotified", new=AsyncMock(return_value=[overdue])),
         patch.object(svc._repo, "mark_overdue_notified", new=AsyncMock()),

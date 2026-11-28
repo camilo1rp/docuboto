@@ -86,7 +86,7 @@ def _full_row(tenant: str = "demo") -> dict:
 # --------------------------------------------------------------------------- list
 @pytest.mark.asyncio
 async def test_list_requires_perm_dlq_admin(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchval.return_value = None  # check_permission → denegado
     resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 403
@@ -94,7 +94,7 @@ async def test_list_requires_perm_dlq_admin(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_list_returns_summaries(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetch.return_value = [_summary_row()]
     with patch(
         "workflow.routers.admin_deadletter.resolve_caller_clearance",
@@ -110,7 +110,7 @@ async def test_list_returns_summaries(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_list_no_payload_or_last_error_in_response(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetch.return_value = [_summary_row()]
     with patch(
         "workflow.routers.admin_deadletter.resolve_caller_clearance",
@@ -149,7 +149,7 @@ async def test_list_missing_user_id_returns_403(client_with_conn) -> None:
     en esta ruta ya protegida (ver docstring de ``get_actor``). No se espera
     401 aquí — ver ``test_get_actor_missing_header_raises_401`` para la rama
     401 real, en aislamiento."""
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchval.return_value = None  # check_permission → denegado (user_id=None)
     headers = {k: v for k, v in TENANT_HEADERS.items() if k != "X-User-Id"}
     resp = await client.get(f"{BASE}/", headers=headers)
@@ -192,7 +192,7 @@ async def test_get_actor_valid_uuid_returns_it() -> None:
 # --------------------------------------------------------------------------- detail
 @pytest.mark.asyncio
 async def test_detail_requires_perm(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchval.return_value = None
     resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 403
@@ -200,7 +200,7 @@ async def test_detail_requires_perm(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_detail_not_found(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = None
     resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 404
@@ -208,7 +208,7 @@ async def test_detail_not_found(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_detail_clearance_denied(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = None
     mock_audit = AsyncMock()
     with (
@@ -226,7 +226,7 @@ async def test_detail_clearance_denied(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_detail_success(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row()
     with (
         patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
@@ -245,7 +245,7 @@ async def test_detail_view_writes_audit_log(client_with_conn) -> None:
     """Un GET autorizado (tras el gate de clearance) deja un asiento
     ``evento.dead_letter.viewed`` en audit_log con el actor humano (ADR-021,
     seguimiento no-bloqueante Fase 5)."""
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row()
     mock_audit = AsyncMock()
     with (
@@ -270,7 +270,7 @@ async def test_detail_view_writes_audit_log(client_with_conn) -> None:
 # --------------------------------------------------------------------------- replay
 @pytest.mark.asyncio
 async def test_replay_success(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 1"
     mock_audit = AsyncMock()
@@ -293,7 +293,7 @@ async def test_replay_success(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_replay_handler_fails_returns_502(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 1"
     with (
@@ -314,7 +314,7 @@ async def test_replay_handler_fails_returns_502(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_replay_not_pending_returns_409(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 0"
     with (
@@ -330,7 +330,7 @@ async def test_replay_not_pending_returns_409(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_replay_tenant_mismatch_returns_422(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row(tenant="otro")
     with patch("workflow.routers.admin_deadletter._audit", AsyncMock()):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
@@ -339,7 +339,7 @@ async def test_replay_tenant_mismatch_returns_422(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_replay_clearance_denied_returns_404(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = None
     with (
         patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
@@ -352,7 +352,7 @@ async def test_replay_clearance_denied_returns_404(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_replay_not_found_returns_404(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = None
     with patch("workflow.routers.admin_deadletter._audit", AsyncMock()):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
@@ -362,7 +362,7 @@ async def test_replay_not_found_returns_404(client_with_conn) -> None:
 # --------------------------------------------------------------------------- discard
 @pytest.mark.asyncio
 async def test_discard_success(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     # get_for_update returns a full row (SELECT *); clearance gate passes.
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 1"
@@ -384,7 +384,7 @@ async def test_discard_success(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_discard_no_reason_returns_422(client_with_conn) -> None:
-    client, _conn, _redis = client_with_conn
+    client, _conn, _eventos = client_with_conn
     resp = await client.post(f"{BASE}/{EVT}/discard", headers=TENANT_HEADERS, json={})
     assert resp.status_code == 422
 
@@ -392,7 +392,7 @@ async def test_discard_no_reason_returns_422(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_discard_clearance_denied_returns_404(client_with_conn) -> None:
     """Admin con clearance insuficiente recibe 404 neutro; el estado no transiciona."""
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = None
     with (
         patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
@@ -411,7 +411,7 @@ async def test_discard_clearance_denied_returns_404(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_discard_not_pending_returns_409(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = {
         "event_id": EVT, "status": "resolved",
         "event_type": "x", "origin_stream": "y", "failure": {},
@@ -430,7 +430,7 @@ async def test_discard_not_pending_returns_409(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_discard_not_found_returns_404(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = None
     resp = await client.post(
         f"{BASE}/{EVT}/discard", headers=TENANT_HEADERS, json={"reason": "x"}
@@ -447,7 +447,7 @@ async def test_discard_not_found_returns_404(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_list_passes_own_origin_group_to_repo(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetch.return_value = [_summary_row()]
     await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     params = conn.fetch.call_args[0][1:]
@@ -457,7 +457,7 @@ async def test_list_passes_own_origin_group_to_repo(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_detail_passes_own_origin_group_to_repo(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row()
     with (
         patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
@@ -470,7 +470,7 @@ async def test_detail_passes_own_origin_group_to_repo(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_replay_passes_own_origin_group_to_get_for_update(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 1"
     with (
@@ -489,7 +489,7 @@ async def test_replay_passes_own_origin_group_to_get_for_update(client_with_conn
 
 @pytest.mark.asyncio
 async def test_discard_passes_own_origin_group(client_with_conn) -> None:
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 1"
     with (
@@ -581,7 +581,7 @@ def test_las_rutas_del_dlq_toman_la_identidad_de_get_actor() -> None:
 async def test_list_pasa_el_clearance_del_llamante_al_repositorio(client_with_conn) -> None:
     """El router ya no filtra en Python: entrega el clearance al repositorio, que lo
     aplica en el WHERE. El total sale de la misma consulta."""
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchval.return_value = 1  # check_permission
     lista = AsyncMock(return_value=([_summary_row()], 7))
     with (
@@ -602,7 +602,7 @@ async def test_list_pasa_el_clearance_del_llamante_al_repositorio(client_with_co
 async def test_sin_tabla_radicados_el_listado_responde_503(client_with_conn) -> None:
     from orpycamcp_common.deadletter import RadicadosAusenteError
 
-    client, conn, _redis = client_with_conn
+    client, conn, _eventos = client_with_conn
     conn.fetchval.return_value = 1
     with (
         patch("workflow.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),

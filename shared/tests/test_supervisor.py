@@ -11,8 +11,8 @@
 
 Los cuatro consumidores del sistema se lanzaban con `asyncio.create_task(run())`
 sin `done_callback` ni supervisor. `run()` llama a `ensure_group` **antes** de
-entrar en su bucle y fuera de todo `try`: si Redis no está disponible en ese
-instante —arranque en frío, o un reinicio de Redis— la excepción mata la tarea.
+entrar en su bucle y fuera de todo `try`: si la base no está disponible en ese
+instante —arranque en frío, o un reinicio de PostgreSQL— la excepción mata la tarea.
 El proceso sigue vivo, la API responde, `/health` devuelve 200 y **nadie consume
 nada**: en workflow eso es la correspondencia entrante que deja de repartirse.
 
@@ -36,14 +36,14 @@ def _limpiar_estado():
 
 
 async def test_el_consumidor_muerto_vuelve() -> None:
-    """Redis caído al arrancar mataba la tarea PARA SIEMPRE. Ahora reintenta."""
+    """La base caída al arrancar mataba la tarea PARA SIEMPRE. Ahora reintenta."""
     intentos = []
     listo = asyncio.Event()
 
     async def consumidor() -> None:
         intentos.append(1)
         if len(intentos) < 3:
-            raise ConnectionError("Redis no disponible")
+            raise ConnectionError("base no disponible")
         listo.set()
         await asyncio.sleep(3600)  # el bucle real, que ya no muere
 
@@ -99,7 +99,7 @@ async def test_la_muerte_queda_en_el_log(caplog) -> None:
     """Sin esto el fallo es MUDO: asyncio solo lo delata al recolectar la tarea."""
 
     async def consumidor() -> None:
-        raise ConnectionError("Redis no disponible")
+        raise ConnectionError("base no disponible")
 
     with caplog.at_level(logging.ERROR):
         tarea = events.spawn_supervised(
@@ -116,8 +116,8 @@ async def test_la_muerte_queda_en_el_log(caplog) -> None:
     assert any(r.exc_info for r in caplog.records), "debe registrar la excepción, no solo el texto"
 
 
-async def test_la_espera_crece_para_no_martillear_un_redis_caido() -> None:
-    """Reintentar sin pausa contra un Redis caído es parte del incidente."""
+async def test_la_espera_crece_para_no_martillear_una_base_caida() -> None:
+    """Reintentar sin pausa contra una base caída es parte del incidente."""
     esperas = []
     dormir_real = asyncio.sleep
 
@@ -164,7 +164,7 @@ async def test_el_estado_recuerda_el_ultimo_error_y_cuenta_reinicios() -> None:
     """`reinicios` creciendo con `corriendo=True` es un consumidor que rebota."""
 
     async def consumidor() -> None:
-        raise ConnectionError("Redis no disponible")
+        raise ConnectionError("base no disponible")
 
     tarea = events.spawn_supervised(
         consumidor, name="prueba", backoff_inicial=0.001, backoff_maximo=0.001

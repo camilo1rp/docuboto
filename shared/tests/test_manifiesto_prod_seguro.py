@@ -17,14 +17,13 @@ host y se comprueban con `scripts/preflight-prod.sh`.
 
 1. Solo `edge` (nginx en contenedor, ADR-033) publica `ports:`, y solo 80 y 443:
    el tráfico entra por el proxy en contenedor; la lista de admisión es exacta.
-2. Redis exige contraseña (`--requirepass ${REDIS_PASSWORD:?}`).
-3. Toda credencial es obligatoria (`${VAR:?}`) y ninguna tiene valor por
+2. Toda credencial es obligatoria (`${VAR:?}`) y ninguna tiene valor por
    defecto; las rotaciones vacías por diseño están declaradas.
-4. Las imágenes de terceros llevan tag Y digest (`@sha256:`), nunca `latest`
+3. Las imágenes de terceros llevan tag Y digest (`@sha256:`), nunca `latest`
    ni tag implícito; los scripts de `infra/` tampoco admiten `:latest`.
-5. `TRUSTED_PROXIES` por defecto no incluye el gateway de la red Docker, la
+4. `TRUSTED_PROXIES` por defecto no incluye el gateway de la red Docker, la
    plantilla de nginx cubre los tres hosts y `edge` los resuelve por alias.
-6. `infra/.env.example` cubre todas las variables del manifiesto.
+5. `infra/.env.example` cubre todas las variables del manifiesto.
 """
 
 from __future__ import annotations
@@ -74,19 +73,14 @@ def test_ningun_servicio_publica_puertos() -> None:
     )
 
 
-def test_redis_exige_contrasena() -> None:
-    cmd = servicios(COMPOSE_PROD)["redis"].get("command")
-    cmd = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
-    assert "--requirepass ${REDIS_PASSWORD:?" in cmd, f"Redis sin requirepass obligatorio: {cmd}"
-
-
 def test_toda_credencial_es_obligatoria_y_sin_defecto() -> None:
     texto = _texto_sin_comentarios()
     ops: dict[str, set[str | None]] = {}
     for nombre, op in _REF.findall(texto):
         if _CRED.search(nombre):
             ops.setdefault(nombre, set()).add(op or None)
-    assert len(ops) >= 17, f"solo {len(ops)} credenciales detectadas: guardián ciego"
+    # 16 desde ADR-049 (se fue la contraseña del almacén de eventos con su contenedor).
+    assert len(ops) >= 16, f"solo {len(ops)} credenciales detectadas: guardián ciego"
     con_defecto = sorted(n for n, o in ops.items() if o & {":-", "-"} and n not in DEFECTO_DECLARADO)
     sin_obligatoria = sorted(
         n for n, o in ops.items() if ":?" not in o and n not in DEFECTO_DECLARADO
@@ -121,7 +115,8 @@ def test_imagenes_de_terceros_con_tag_y_digest() -> None:
             mal.append(f"{nombre}: latest: {imagen}")
         elif not re.search(r"@sha256:[0-9a-f]{64}$", imagen):
             mal.append(f"{nombre}: sin digest @sha256 (un tag se puede mover): {imagen}")
-    assert terceros >= 4, "no se encontraron imágenes de terceros: guardián ciego"
+    # 3 desde ADR-049 (postgres, el almacén de objetos y edge).
+    assert terceros >= 3, "no se encontraron imágenes de terceros: guardián ciego"
     assert not mal, "\n  ".join(mal)
 
 

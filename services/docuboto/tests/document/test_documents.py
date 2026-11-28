@@ -258,9 +258,9 @@ async def test_create_document_inactive_dependencia_is_400(
 
 
 @pytest.mark.asyncio
-async def test_create_document_emits_event(client_with_redis) -> None:
+async def test_create_document_emits_event(client_with_eventos) -> None:
     """Al radicar se publica un evento en orpycamcp.document.events (ADR-010)."""
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
     record = make_radicado_record(tracking_number="2024-DEMO-E-000001")
     mock_conn.fetchrow.side_effect = [None, {"code": "DEMO"}, record]
     mock_conn.fetchval.return_value = 1
@@ -269,19 +269,19 @@ async def test_create_document_emits_event(client_with_redis) -> None:
     response = await client.post("/api/v1/documents", json=_CREATE_PAYLOAD, headers=TENANT_HEADERS)
 
     assert response.status_code == 201
-    # Se hizo XADD al stream del dominio con el sobre canónico.
-    assert fake_redis.xadd.await_count == 1
-    stream, fields = fake_redis.xadd.await_args.args
+    # Se publicó en el stream del dominio con el sobre canónico.
+    assert len(eventos) == 1
+    stream, fields = eventos.ultimo_plano()
     assert stream == "orpycamcp.document.events"
     assert fields["event_type"] == "document.radicado.created"
     assert fields["tenant_slug"] == "demo"
 
 
 @pytest.mark.asyncio
-async def test_create_document_survives_event_failure(client_with_redis) -> None:
-    """Si Redis falla, la radicación NO se revierte (evento best-effort)."""
-    client, mock_conn, fake_redis = client_with_redis
-    fake_redis.xadd.side_effect = RuntimeError("redis down")
+async def test_create_document_publica_en_la_conexion_del_acto(client_with_eventos) -> None:
+    """ADR-049: el evento se publica con la MISMA conexión que escribe el radicado —
+    por tanto en su transacción—: si la radicación revierte, el evento no existe."""
+    client, mock_conn, eventos = client_with_eventos
     record = make_radicado_record()
     mock_conn.fetchrow.side_effect = [None, {"code": "DEMO"}, record]
     mock_conn.fetchval.return_value = 1
@@ -289,7 +289,8 @@ async def test_create_document_survives_event_failure(client_with_redis) -> None
 
     response = await client.post("/api/v1/documents", json=_CREATE_PAYLOAD, headers=TENANT_HEADERS)
 
-    assert response.status_code == 201  # el radicado se creó pese al fallo de Redis
+    assert response.status_code == 201
+    assert [c for c, _s, _e in eventos] == [mock_conn]
 
 
 @pytest.mark.asyncio
@@ -793,11 +794,9 @@ async def test_update_document(
 
 
 @pytest.mark.asyncio
-async def test_update_encola_document_radicado_updated(
-    client_with_conn: tuple[AsyncClient, AsyncMock],
-) -> None:
+async def test_update_encola_document_radicado_updated(client_with_eventos) -> None:
     """Un cambio de datos deja `document.radicado.updated` en la misma transacción."""
-    client, mock_conn = client_with_conn
+    client, mock_conn, eventos = client_with_eventos
     doc_id = uuid.uuid4()
     antes = make_radicado_record(doc_id=doc_id, subject="Asunto anterior")
     despues = make_radicado_record(doc_id=doc_id, subject="Asunto actualizado")
@@ -820,10 +819,9 @@ async def test_update_encola_document_radicado_updated(
     )
 
     assert response.status_code == 200
-    assert any(
-        "document.radicado.updated" in str(call.args)
-        for call in mock_conn.execute.await_args_list
-    )
+    (conn, _stream, evento), = eventos
+    assert evento["event_type"] == "document.radicado.updated"
+    assert conn is mock_conn
 
 
 @pytest.mark.asyncio

@@ -9,10 +9,10 @@
 
 """Tests de dead-letter y barrido de reclamación en workflow-service (R-4, ADR-021 Fase 2).
 
+La cadencia de la reclamación es del bus (`docuboto.core.bus`, ADR-049) y se
+prueba en `tests/document/integration/test_bus_eventos_integration.py`.
+
 Cubre:
-  1. run() — barrido reclaim_stale invocado tras RECLAIM_INTERVAL (mock time.monotonic).
-  2. run() — barrido no invocado antes del intervalo.
-  3. run() — fallo en barrido no tumba el loop.
   4. _persist_dead_letter() — INSERT real + audit.append en la misma transacción.
   5. _persist_dead_letter() — idempotencia ON CONFLICT (no re-audita).
   6. _persist_dead_letter() — error transiente de BD propaga (no ack sin traza).
@@ -24,17 +24,14 @@ Patrón de mock:
   - _audit se parchea a nivel de módulo (app.workers.document_consumer._audit).
   - get_pool se parchea para el caso R1 (conexión a public schema sin tenant).
   - conn.fetchrow controla el resultado del INSERT (INSERT real vs ON CONFLICT).
-  - time se parchea como módulo completo para controlar monotonic() en run().
 """
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from orpycamcp_common import events
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -96,107 +93,6 @@ def _failure_meta() -> dict:
         "dead_lettered_at": "2026-06-29T10:01:00+00:00",
         "dead_letter_last_error": "connection reset by peer",
     }
-
-
-# ===========================================================================
-# 1-3. run() — reclaim sweep
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
-    """run() llama events.reclaim_stale cuando RECLAIM_INTERVAL ha transcurrido.
-
-    Se controla time.monotonic con valores sintéticos:
-      - Primera llamada (init _last_reclaim): 0.0
-      - Segunda llamada (comprobación 'now'): 31.0  (> RECLAIM_INTERVAL = 30.0)
-
-    Primera xreadgroup: mensajes vacíos → reclaim se dispara.
-    Segunda xreadgroup: CancelledError → sale del bucle.
-    """
-    from workflow.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],                        # primera iteración: sin mensajes nuevos
-        asyncio.CancelledError(),  # segunda iteración: salida limpia
-    ]
-
-    mock_reclaim = AsyncMock(return_value=events.ReclaimStats())
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("workflow.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("workflow.workers.document_consumer.time") as mock_time,
-    ):
-        # Primer monotonic → 0.0 (init _last_reclaim)
-        # Segundo monotonic → 31.0 (reclaim check — supera el intervalo de 30 s)
-        mock_time.monotonic.side_effect = [0.0, 31.0]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    mock_reclaim.assert_awaited_once()
-    kw = mock_reclaim.await_args.kwargs
-    assert kw["deadletter_stream"] == document_consumer.DEADLETTER_STREAM
-    assert kw["max_deliveries"] == 5
-    assert kw["min_idle_ms"] == 60_000
-    assert kw["on_dead_letter"] is document_consumer._persist_dead_letter
-
-
-@pytest.mark.asyncio
-async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
-    """run() NO invoca reclaim_stale si el intervalo aún no ha transcurrido."""
-    from workflow.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],
-        asyncio.CancelledError(),
-    ]
-
-    mock_reclaim = AsyncMock(return_value=events.ReclaimStats())
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("workflow.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("workflow.workers.document_consumer.time") as mock_time,
-    ):
-        # 0.0 → init; 5.0 → comprobación (solo 5 s < 30 s → sin barrido)
-        mock_time.monotonic.side_effect = [0.0, 5.0]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    mock_reclaim.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
-    """Un error en reclaim_stale loguea WARNING pero el bucle continúa."""
-    from workflow.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],
-        asyncio.CancelledError(),
-    ]
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch(
-            "workflow.workers.document_consumer.events.reclaim_stale",
-            AsyncMock(side_effect=RuntimeError("db connection lost")),
-        ),
-        patch("workflow.workers.document_consumer.time") as mock_time,
-    ):
-        mock_time.monotonic.side_effect = [0.0, 31.0]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    # Loop survivió: xreadgroup fue invocado dos veces.
-    assert fake_redis.xreadgroup.call_count == 2
 
 
 # ===========================================================================

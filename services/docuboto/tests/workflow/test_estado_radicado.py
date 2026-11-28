@@ -120,7 +120,7 @@ def test_casos_nominales() -> None:
 async def test_assign_sobre_radicado_terminal_409(
     client_with_conn: Cliente, _sin_sincronizacion_de_estado: AsyncMock, terminal: str
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     mock_conn.fetchrow.return_value = make_step_record(step_id=STEP_ID)
     _sin_sincronizacion_de_estado.return_value = (terminal, terminal)
 
@@ -136,7 +136,7 @@ async def test_assign_sobre_radicado_terminal_409(
     assert not any(
         "INSERT INTO public.audit_log" in c.args[0] for c in mock_conn.execute.await_args_list
     )
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
@@ -171,10 +171,10 @@ async def test_complete_paso_inexistente_sigue_siendo_404_step_not_found(
 
 
 @pytest.mark.asyncio
-async def test_cambio_de_estado_va_en_el_asiento_y_se_emite_tras_commit(
+async def test_cambio_de_estado_va_en_el_asiento_y_se_emite_en_la_misma_tx(
     client_with_conn: Cliente, _sin_sincronizacion_de_estado: AsyncMock
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     mock_conn.fetchrow.return_value = make_step_record(step_id=STEP_ID)
     _sin_sincronizacion_de_estado.return_value = ("registered", "distributed")
 
@@ -188,9 +188,9 @@ async def test_cambio_de_estado_va_en_el_asiento_y_se_emite_tras_commit(
     payload = json.loads(audit_calls[0].args[8])
     assert payload["estado_radicado"] == {"antes": "registered", "despues": "distributed"}
 
-    tipos = [c.args[1]["event_type"] for c in mock_redis.xadd.call_args_list]
+    tipos = eventos.tipos()
     assert tipos == ["workflow.step.created", "workflow.radicado.estado_cambiado"]
-    evt = mock_redis.xadd.call_args_list[1].args[1]
+    evt = eventos.llamadas()[1][1]
     assert evt["dedup_key"].startswith(f"{RADICADO_ID}:distributed:")
     assert json.loads(evt["payload"])["despues"] == "distributed"
 
@@ -199,7 +199,7 @@ async def test_cambio_de_estado_va_en_el_asiento_y_se_emite_tras_commit(
 async def test_sin_cambio_no_hay_evento_ni_clave_en_el_asiento(
     client_with_conn: Cliente, _sin_sincronizacion_de_estado: AsyncMock
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     mock_conn.fetchrow.return_value = make_step_record(step_id=STEP_ID)
     _sin_sincronizacion_de_estado.return_value = ("distributed", "distributed")
 
@@ -209,7 +209,7 @@ async def test_sin_cambio_no_hay_evento_ni_clave_en_el_asiento(
         c for c in mock_conn.execute.await_args_list if "INSERT INTO public.audit_log" in c.args[0]
     ]
     assert "estado_radicado" not in json.loads(audit_calls[0].args[8])
-    assert [c.args[1]["event_type"] for c in mock_redis.xadd.call_args_list] == [
+    assert eventos.tipos() == [
         "workflow.step.created"
     ]
 
@@ -357,7 +357,7 @@ async def test_finalizar_no_poseedor_404_neutro(
 async def test_finalizar_del_poseedor_cierra(
     client_with_conn: Cliente, _sin_sincronizacion_de_estado: AsyncMock
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     activo = make_step_record(step_id=STEP_ID, step_status="in_progress", assigned_to=USER_ID)
     cerrado = make_step_record(step_id=STEP_ID, step_status="completed", assigned_to=USER_ID)
     # get_active_step_for_update, UPDATE ... RETURNING del apply_finalizar
@@ -474,7 +474,7 @@ def _preparar(mock_conn: AsyncMock, acto: str) -> str:
 async def test_devolver_y_rollback_sincronizan_y_dejan_el_cambio_en_el_asiento(
     client_with_conn: Cliente, _sin_sincronizacion_de_estado: AsyncMock, acto: str
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     url = _preparar(mock_conn, acto)
     _sin_sincronizacion_de_estado.return_value = ("in_progress", "distributed")
 
@@ -489,7 +489,7 @@ async def test_devolver_y_rollback_sincronizan_y_dejan_el_cambio_en_el_asiento(
         "antes": "in_progress",
         "despues": "distributed",
     }
-    tipos = [c.args[1]["event_type"] for c in mock_redis.xadd.call_args_list]
+    tipos = eventos.tipos()
     assert tipos == ["workflow.radicado.estado_cambiado"]
 
 
@@ -502,7 +502,7 @@ async def test_devolver_y_rollback_sobre_terminal_409_sin_asiento_ni_evento(
     acto: str,
     terminal: str,
 ) -> None:
-    client, mock_conn, mock_redis = client_with_conn
+    client, mock_conn, eventos = client_with_conn
     url = _preparar(mock_conn, acto)
     _sin_sincronizacion_de_estado.return_value = (terminal, terminal)
 
@@ -513,4 +513,4 @@ async def test_devolver_y_rollback_sobre_terminal_409_sin_asiento_ni_evento(
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "radicado_terminal"
     assert _audits(mock_conn) == []
-    mock_redis.xadd.assert_not_awaited()
+    assert not eventos

@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -229,3 +231,37 @@ def _nivel_vigente_neutro(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
             return dict(sol)
 
         monkeypatch.setattr(CadenaFirmaService, "_assert_can_read_vigente", _solo_copia)
+
+
+class EventosPublicados(list):
+    """Lo que `events.publish` habría insertado: `(conn, stream, sobre)` por evento."""
+
+    def de_tipo(self, event_type: str) -> list[dict[str, Any]]:
+        return [e for _c, _s, e in self if e["event_type"] == event_type]
+
+    def tipos(self) -> list[str]:
+        return [e["event_type"] for _c, _s, e in self]
+
+
+@pytest.fixture(autouse=True)
+def eventos_publicados(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> EventosPublicados:
+    """Publicar (ADR-049) es el reloj de la BASE + un INSERT en `eventos` sobre la
+    conexión del acto: con `conn` simulado consumiría sus cadenas de `fetchval`.
+    Se graba lo publicado y con qué conexión. En integración NO se sustituye."""
+    grabados = EventosPublicados()
+    if "integration" in request.node.nodeid:
+        return grabados
+    from orpycamcp_common import events
+
+    async def _reloj(_conn: object) -> datetime:
+        return datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
+
+    async def _publicar(conn: object, stream: str, event: dict[str, Any]) -> int:
+        grabados.append((conn, stream, event))
+        return len(grabados)
+
+    monkeypatch.setattr(events, "reloj_bd", _reloj)
+    monkeypatch.setattr(events, "publish", _publicar)
+    return grabados

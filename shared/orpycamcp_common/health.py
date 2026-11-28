@@ -10,7 +10,7 @@
 """Sondas de salud: dos preguntas distintas, dos endpoints distintos.
 
 **`/health` — vivacidad.** ¿Responde el proceso? Nada más. No toca base de
-datos, ni Redis, ni ningún servicio vecino, y devuelve 200 mientras el proceso
+datos, ni ningún servicio vecino, y devuelve 200 mientras el proceso
 conteste. Es lo que consulta el `healthcheck` del contenedor, y por eso **no
 debe** depender de nada externo: reiniciar un servicio porque Postgres está
 caído no arregla Postgres — tira el trabajo en vuelo, pierde las conexiones y
@@ -24,7 +24,7 @@ para que el balanceador deje de mandarle peticiones sin que nadie lo reinicie.
 
 **Por qué no basta con una.** Tres servicios —signature, knowledge y mcp—
 devolvían un 200 fijo sin tocar nada, y ese endpoint ERA el `healthcheck` del
-contenedor: un servicio sin base de datos, sin Redis o con el consumidor de
+contenedor: un servicio sin base de datos o con el consumidor de
 eventos muerto se reportaba sano indefinidamente. Los demás hacían lo contrario:
 metían la comprobación de dependencias en la sonda que gobierna los reinicios.
 
@@ -77,35 +77,26 @@ def liveness(service: str) -> dict[str, str]:
     return {"status": "ok", "service": service, "version": version()}
 
 
-async def consumer_report(
-    redis: Any, estado: dict[str, Any] | None, deadletter_stream: str
-) -> dict[str, Any]:
+def consumer_report(estado: dict[str, Any] | None, dlq_pendientes: int | None) -> dict[str, Any]:
     """Qué ve ``/health/ready`` del consumidor de eventos y de su dead-letter.
 
     ``estado`` es ``events.consumer_status()[nombre]`` (o ``None`` si el
-    consumidor no corre en este proceso). Devuelve el detalle numérico del último
-    barrido de reclamación, el tamaño de la DLQ de Redis (``XLEN``) y un veredicto
-    ``dead_letter``: ``degraded`` si hay entradas en la DLQ o el último barrido
-    aparcó mensajes, ``ok`` si no.
+    consumidor no corre en este proceso). ``dlq_pendientes`` son las filas
+    ``pending`` de su grupo en ``evento_dead_letter``, sumadas sobre las
+    entidades (``None`` si no se pudo contar). Veredicto ``dead_letter``:
+    ``degraded`` si hay pendientes o el último barrido aparcó entregas, ``ok`` si no.
 
     Solo informa: el consumidor nunca decide el 503 (el servicio atiende peticiones
-    mientras reintenta); lo que se corrige es que el tamaño de la PEL y de la DLQ
-    no se veía en ningún sitio. Un ``XLEN`` que falla no tumba la sonda: el campo
-    queda en ``None`` y el veredicto no se degrada por algo que no se pudo medir.
+    mientras reintenta). Un conteo que falla no tumba la sonda: el campo queda en
+    ``None`` y el veredicto no se degrada por algo que no se pudo medir.
     """
-    dlq_len: int | None
-    try:
-        dlq_len = int(await redis.xlen(deadletter_stream))
-    except Exception:
-        logger.warning("XLEN de la dead-letter '%s' falló", deadletter_stream, exc_info=True)
-        dlq_len = None
     estado = estado or {}
     ultimo = int(estado.get("dead_lettered", 0) or 0)
-    degradado = bool(dlq_len) or ultimo > 0
+    degradado = bool(dlq_pendientes) or ultimo > 0
     return {
         "dead_letter": "degraded" if degradado else "ok",
         "detalle": {
-            "dead_letter_stream_len": dlq_len,
+            "dead_letter_pendientes": dlq_pendientes,
             "ultimo_barrido": estado.get("ultimo_barrido"),
             "reclamados": estado.get("reclamados", 0),
             "dead_lettered_ultimo_barrido": ultimo,

@@ -10,7 +10,7 @@ responsible for one bounded context, and runs their background loops. There is n
 
 - **Synchronous, by function call**: each package exposes its door in `<package>/api.py`
   and the others import it. There are no HTTP hops between domains.
-- **Asynchronous (Redis Streams)**, for domain events (a radicado created, a flow
+- **Asynchronous (event bus in PostgreSQL, ADR-049)**, for domain events (a radicado created, a flow
   assigned, a document signed, etc.).
 
 ```mermaid
@@ -30,7 +30,6 @@ graph TB
 
     subgraph infra["Infrastructure"]
         PG[("PostgreSQL 15")]
-        REDIS[("Redis<br/>Streams + cache")]
         MINIO[("RustFS<br/>S3 object store")]
         MAIL["Mailpit<br/>(dev only)"]
     end
@@ -39,8 +38,7 @@ graph TB
     EDGE -->|JWT Bearer| MW
     DOM --> PG
     BG --> PG
-    DOM <--> REDIS
-    BG <--> REDIS
+    BG <-.->|events: LISTEN/NOTIFY| PG
     DOM --> MINIO
     DOM --> MAIL
     DOM -.->|PPI, only with PPI_PROVIDER_URL| PPI["Intelligence provider<br/>(optional)"]
@@ -48,9 +46,9 @@ graph TB
 
 ADR-047 targets four containers (`app`, `postgres`, `edge`, `frontend`). **That target isn't
 reached yet**: Keycloak is gone ([ADR-048](adr/ADR-048-identidad-emitida-por-docuboto.md): the
-app issues identity itself), but Redis and the object store stay in the manifests until
-[ADR-049](adr/ADR-049-eventos-en-postgresql-sin-redis.md) and
-[ADR-050](adr/ADR-050-bytes-en-disco-y-archivo-sellado.md) remove them.
+app issues identity itself) and so is Redis ([ADR-049](adr/ADR-049-eventos-en-postgresql-sin-redis.md):
+events live in PostgreSQL), but the object store stays in the manifests until
+[ADR-050](adr/ADR-050-bytes-en-disco-y-archivo-sellado.md) removes it.
 
 Docuboto does not call any language model
 ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)) and is **not a tool server for
@@ -76,7 +74,7 @@ their veto at the edge are retired (ADR-047 §1 and §3).
 | Module | What it does |
 |---|---|
 | `main.py` | `create_app()`: the only place with middleware and exception handlers; mounts each package's `DOMAIN_ROUTERS`, `/health`, and `/metrics` |
-| `config.py` | `CommonSettings` (database, pool, Redis, log) and one `Settings` class per domain; environment variable names are unchanged and carry no prefix |
+| `config.py` | `CommonSettings` (database, pool, log) and one `Settings` class per domain; environment variable names are unchanged and carry no prefix |
 | `core/lifespan.py` | One database pool and the start of the background tasks |
 | `core/tasks.py` | `BackgroundTasks`: consumers, LTA renewal, format migration, and the `trabajo_fuera` queues (`app`, light; `worker`, heavy, a name kept in the schema). Heavy work takes a slot from `heavy_slot()`, a semaphore of `HEAVY_JOBS_CONCURRENCY` (default 1) |
 | `core/security.py` | `SecurityHeadersMiddleware` (`X-Request-Id`, `nosniff`, `DENY`, `no-referrer`) and `UserRateLimitMiddleware` (`RATE_LIMIT_PER_USER`, 120/min per person) |
@@ -91,7 +89,6 @@ The nine packages live side by side (`services/docuboto/<package>/`), with their
 | `migrate-docuboto` | — | — | Applies the migration chain (ADR-053) and exits; `app` waits for it |
 | `frontend` | 3000 | **19300** | SvelteKit SSR — presentation layer (E22) |
 | PostgreSQL | 5432 | **15432** | Single database, multi-schema |
-| Redis | 6379 | **16379** | Event streams + cache (until ADR-049) |
 | RustFS (`minio`) | 9000 | **19900** | S3 object store (replaces MinIO, ADR-027; until ADR-050). No web console: inspect it with `aws-cli` |
 | Mailpit | 1025 (SMTP) / 8025 (web) | 1025 / 8025 | Email capture in development (`dev` profile) |
 | `edge` | 80 / 443 | 80 / 443 | Production only: nginx with TLS, per-IP rate limiting, and proxying to `app` and `frontend` |
@@ -205,7 +202,7 @@ You provision the entity with `scripts/init-tenant.sh`; there's no HTTP route fo
 FastAPI's own router does the prefix routing: each package mounts its routes with
 `include_router`. What the gateway used to do is now split this way:
 
-- **Per-IP rate limiting** → `edge` (nginx `limit_req`, no Redis): general, login, anonymous
+- **Per-IP rate limiting** → `edge` (nginx `limit_req`, no external store): general, login, anonymous
   counter/PQRS submissions, and OAI-PMH/CMIS harvesting, with the budgets the gateway had
   (`infra/nginx/orpyca.conf.template`).
 - **Per-person quota** → `UserRateLimitMiddleware` in the app (`RATE_LIMIT_PER_USER`).
@@ -221,13 +218,17 @@ Security rules **by design** (not accidental):
   reached directly from outside.
 - **`knowledge` is scoped**: it exposes only `/search`, `/antecedentes`, and the PPI callback.
 
-## Asynchronous orchestration — Redis Streams
+## Asynchronous orchestration — the PostgreSQL bus (ADR-049)
 
-Stream naming pattern: `orpycamcp.{service}.events`
-(dead-letter: `orpycamcp.{service}.deadletter`). Every consumer worker uses a Redis
-consumer group (`XREADGROUP`) and only issues `XACK` after successful processing; if
-it fails, the message stays in the PEL for retry and, after exhausting retries, is
-moved to the dead-letter stream (ADR-021).
+Events live in the `eventos` table of each entity's schema; the stream is a column
+(`orpycamcp.{document,workflow,signature}.events`). Publishing is an `INSERT` in the
+**same transaction** as the change, with a `NOTIFY eventos` that only wakes consumers: if
+the transaction rolls back, the event doesn't exist. One loop (`docuboto/core/bus.py`)
+serves the four consumer groups: it claims each event by inserting its row in
+`evento_entregas` (`ON CONFLICT DO NOTHING`), processes it and confirms only on success;
+an unconfirmed delivery is reclaimed after 60 s (`FOR UPDATE SKIP LOCKED`) and, on the
+fifth delivery, parked in `evento_dead_letter` (ADR-021). The document sweep purges
+confirmed events older than `EVENTOS_RETENCION_DIAS` (30).
 
 Real end-to-end example — **registering an incoming document**:
 
@@ -235,14 +236,14 @@ Real end-to-end example — **registering an incoming document**:
 sequenceDiagram
     participant U as User
     participant DOC as document
-    participant R as Redis Streams
+    participant R as Bus (eventos table)
     participant WF as workflow
     participant SIG as signature
     participant NOT as notification
 
     U->>DOC: POST /api/v1/documents (register incoming)
     DOC->>DOC: assigns tracking number (SELECT FOR UPDATE)
-    DOC->>R: publishes to orpycamcp.document.events
+    DOC->>R: INSERT into eventos, in the radicado transaction
     par Parallel consumption by group
         R->>WF: document.created
         WF->>WF: creates flow steps / assigns dependencia
@@ -256,8 +257,8 @@ sequenceDiagram
 ```
 
 **If a consumer fails** (e.g. `notification` cannot send the email): the
-message stays in its PEL, is retried with backoff and, if it keeps failing, is
-moved to the `orpycamcp.notification.deadletter` stream. An administrator with
+delivery stays unconfirmed, the reclaim sweep retries it and, on the fifth delivery,
+parks it in `evento_dead_letter` with its last error. An administrator with
 `PERM_DLQ_ADMIN` can inspect, retry (`replay`), or discard those entries via each
 package's `admin_deadletter.py` (ADR-021).
 
@@ -309,7 +310,7 @@ to a function in `<package>/api.py`.
 |---|---|---|
 | HTTP | The app's REST API | User operations that need an immediate response |
 | Function call | `<package>/api.py` (keyword arguments, explicit `tenant_slug` and actor) | One package needs something from another: bytes (`storage/api.py`, the one object-store client), a seal (`signature/api.py`), sending email (`notification/api.py`), business days (`tenant/api.py`)… A package may import only another package's `api` (`shared/tests/test_contrato_api.py`) |
-| Asynchronous | Redis Streams (`orpycamcp.{service}.events`) | Domain events consumed by one or more packages |
+| Asynchronous | Event bus in PostgreSQL (`orpycamcp.{service}.events`) | Domain events consumed by one or more packages |
 
 ## Shared library — `orpycamcp_common`
 
@@ -318,9 +319,8 @@ Anything more than one package needs is defined once here; among others:
 
 - **`audit.py`** — the single write point for `public.audit_log`, with a per-tenant
   hash chain (ADR-008): `compute_hash`, `append`, `append_denial`, `verify_chain`.
-- **`events.py`** — canonical event envelope over Redis Streams (ADR-010):
-  `build_event`, `publish`, `emit`, `ensure_group`, `trim_deadletter`,
-  `reclaim_stale`.
+- **`events.py`** — canonical event envelope and its PostgreSQL bus (ADR-010, ADR-049):
+  `build_event`, `publish`, `emit`, `leer`, `ack`, `reclaim_stale`, `purgar`.
 - **`database.py`** — one pool; `get_conn`, `get_vetted_conn`, `get_tenant_conn`, and
   `acquire_tenant` for work outside a request.
 - **`clearance.py`** — the permission gates: `require_permission`,

@@ -60,10 +60,10 @@ or unquoted slug into a `SET search_path`.
 | PostgreSQL schema | `tenant_{slug, hyphen → underscore}` | `tenant_gobernacion_caldas` |
 | Documents bucket | `orpycamcp-{slug}-documents` | `orpycamcp-gobernacion-caldas-documents` |
 | Preservation (WORM) bucket | `orpycamcp-{slug}-preservation` | `orpycamcp-gobernacion-caldas-preservation` |
-| Redis Stream (shared by all institutions) | `orpycamcp.{service}.events` | `orpycamcp.document.events` |
+| Event stream (`stream` column of the `eventos` table in the institution's schema) | `orpycamcp.{service}.events` | `orpycamcp.document.events` |
 
-The stream **does not carry the slug**: there is one per service, and the institution travels inside the
-event's signed envelope (ADR-010).
+The stream **does not carry the slug**: there is one per service, and since ADR-049 events live in the
+institution's schema; the signed envelope (ADR-010) still carries the institution, which the consumer checks.
 
 ## Entity state
 

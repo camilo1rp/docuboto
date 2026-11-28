@@ -33,7 +33,7 @@ from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.combinacion import desconocidos, vocabulario
 from document.core.dependencias import marcar_alias_deprecado, usa_alias
-from document.core.dependencies import get_redis, get_tenant_client
+from document.core.dependencies import get_tenant_client
 from document.schemas.borrador import (
     BorradorCreate,
     BorradorRadicar,
@@ -329,14 +329,13 @@ async def editar_borrador(
     request: Request,
     response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    redis: Any = Depends(get_redis),
 ) -> BorradorResponse:
     if usa_alias(payload.dest_dept_code, payload.dest_dept):
         marcar_alias_deprecado(response, "PATCH /borradores/{id}")
     user_id = _user(request)
     clearance = await resolve_caller_clearance(conn, user_id)
     # El slug NO es decorativo: el asiento `borrador.editado` se imputa a él.
-    return await BorradorService(conn, _slug(request), redis=redis).editar(
+    return await BorradorService(conn, _slug(request)).editar(
         borrador_id, payload, max_clearance=clearance, actor=user_id
     )
 
@@ -443,10 +442,9 @@ async def radicar_borrador(
     datos: BorradorRadicar | None = Body(default=None),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
 ) -> DocumentResponse:
     try:
-        doc_service = DocumentService(conn, _slug(request), tenant_client, redis)
+        doc_service = DocumentService(conn, _slug(request), tenant_client)
     except InvalidTenantError as exc:
         raise HTTPException(
             status_code=400,

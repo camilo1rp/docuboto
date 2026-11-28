@@ -35,7 +35,7 @@ from tests.workflow.integration.conftest import insert_dependencia
 from tests.workflow.integration.test_estado_radicado_integration import (  # noqa: F401
     _assign,
     _radicado,
-    _sin_permisos_ni_redis,
+    _sin_permisos_y_bus_grabado,
     _user,
     ctx,
 )

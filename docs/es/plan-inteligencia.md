@@ -119,12 +119,12 @@ ADR-051.
 | | **Libro de envíos** de solo inserción y **reconciliación periódica** contra el nivel vivo y contra el inventario PPI (`GET /v1/ingest/inventory`). |
 | | **Carga inicial y reanudación**: al pasar a `ppi`, o al volver a encender la bandera, empuja lo pendiente de los niveles habilitados por lotes reanudables con cursor. |
 | | **Conexión PPI**: declara niveles, vocabularios, URL de retorno y claves (`PUT /v1/connection`); lee y verifica `capabilities` con la clave fijada en configuración; guarda su huella y suspende el envío si cambia. |
-| | **Ruta interna de retorno `content`**, firmada con HMAC por entidad (ventana de 300 s, nonce de un solo uso en Redis): vuelve a pasar la barrera y sirve los bytes desde document-service. No la enruta el gateway. |
+| | **Ruta interna de retorno `content`**, firmada con HMAC por entidad (ventana de 300 s, nonce de un solo uso en la tabla `ppi_nonces`): vuelve a pasar la barrera y sirve los bytes desde document-service. No la enruta el gateway. |
 | | **Delegación de `/search` y `/antecedentes`**, con alcance opcional a un radicado y sus anexos. Re-comprobación viva de cada acierto y cada cita, y respaldo `local` con su etiqueta. Plazo: buscar 3 s (p95 2 s) (ADR-045 §5). La delegación de `/rag` se retiró con ADR-051. |
 | | **`on_behalf_of` seudónimo** (HMAC del `auth_users.id` con clave de la entidad) y su clearance real, recortada al nivel habilitado más alto. |
 | | **Métricas** sin etiqueta de tenant (ADR-041): envíos, rechazos de barrera, respaldos activados y suspensiones. |
 | document-service | **Dos rutas internas** (`X-Internal-Token`): el registro de un radicado y los bytes de un anexo (mediados por storage-service, como D-02). Ambas comprueban en el `WHERE` que el nivel esté entre los habilitados y dejan constancia en el historial de acceso del radicado («transmitido al proveedor de inteligencia»). |
-| | **Eventos nuevos por el outbox** (`042_eventos_salientes`): anexo añadido y datos del radicado cambiados. |
+| | **Eventos nuevos en la transacción del cambio** (entonces el outbox `042_eventos_salientes`; desde ADR-049, la tabla `eventos`): anexo añadido y datos del radicado cambiados. |
 | tenant-service | **`GET` y `PUT /api/v1/config/intelligence`** (`USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento `tenant.intelligence_changed` en una transacción). Pasar a `ppi` exige bandera encendida, política publicada y `transmission_statement` con el proveedor y sus subencargados tal como los declara `capabilities`, y habilita PÚBLICA. El mismo `PUT` enciende o apaga `intelligence_send_metadata` (asiento `tenant.intelligence_metadata_changed`). |
 | | **`PUT /api/v1/config/intelligence/levels`** (mismo patrón y asiento `tenant.intelligence_level_enabled`): habilita RESERVADA o CLASIFICADA, nivel por nivel, con una declaración que nombra la ruta de modelos, los modelos y los subencargados de ese nivel según `capabilities`. Deshabilitar es inmediato y ordena el borrado de lo transmitido de ese nivel (`POST /v1/ingest/purge` con `levels`, PPI 1.1.0). |
 | | **`POST /api/v1/config/intelligence/withdraw`**: pide al proveedor el borrado de todo lo de la entidad (`POST /v1/ingest/purge`) y deja asiento. |
@@ -272,7 +272,7 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
 
 ### Eventos
 
-- **Nuevo**: vencimiento del radicado cambiado (document-service, por outbox). Lo
+- **Nuevo**: vencimiento del radicado cambiado (document-service, en la transacción del cambio). Lo
   consumen workflow-service y la pasarela.
 - La pasarela usa «datos del radicado cambiados» (D1) para marcar `superseded` una
   sugerencia cuyo valor oficial fijó una persona.
@@ -415,6 +415,8 @@ lado del proveedor; los demás aparecieron al preparar este plan.
    Un `workflow.step.created` perdido deja sin enterarse a notification-service y, con
    este plan, a la pasarela. document-service ya resuelve esto con un outbox
    (`042_eventos_salientes`); el flujo debería hacer lo mismo, o al menos registrar.
+   **Resuelto con ADR-049**: el flujo publica en la tabla `eventos` dentro de su
+   transacción, y un fallo al publicar revierte el acto.
 3. **El asiento del reparto automático no dice qué regla lo decidió.**
    - `auto_distribute` llama a `WorkflowService.assign(..., sistema=True)`
      (`distribution.py:176-189`).

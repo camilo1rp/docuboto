@@ -203,11 +203,11 @@ async def test_rechazar_sin_permiso_403(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_aprobar_emite_evento_annulled(client_with_redis) -> None:
+async def test_aprobar_emite_evento_annulled(client_with_eventos) -> None:
     """Aprobar la anulación publica `document.radicado.annulled` en
     orpycamcp.document.events (ADR-010) — gemelo de `_emit_created`.
     knowledge-service lo consume para purgar PERMANENTEMENTE el chunk indexado."""
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
     rid = uuid.uuid4()
     tracking = "2026-DEMO-E-000042"
     mock_conn.fetchrow.side_effect = [
@@ -226,8 +226,8 @@ async def test_aprobar_emite_evento_annulled(client_with_redis) -> None:
     )
 
     assert resp.status_code == 200
-    assert fake_redis.xadd.await_count == 1
-    stream, fields = fake_redis.xadd.await_args.args
+    assert len(eventos) == 1
+    stream, fields = eventos.ultimo_plano()
     assert stream == "orpycamcp.document.events"
     assert fields["event_type"] == "document.radicado.annulled"
     assert fields["tenant_slug"] == TENANT_HEADERS["X-Tenant-Slug"]
@@ -237,9 +237,9 @@ async def test_aprobar_emite_evento_annulled(client_with_redis) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rechazar_no_emite_evento(client_with_redis) -> None:
+async def test_rechazar_no_emite_evento(client_with_eventos) -> None:
     """Rechazar NO cambia el estado del radicado: no publica ningún evento."""
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
     rid = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         _clearance_row(),  # resolve_caller_clearance
@@ -256,13 +256,13 @@ async def test_rechazar_no_emite_evento(client_with_redis) -> None:
     )
 
     assert resp.status_code == 200
-    fake_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
-async def test_solicitar_no_emite_evento(client_with_redis) -> None:
+async def test_solicitar_no_emite_evento(client_with_eventos) -> None:
     """Solicitar (paso 1) tampoco cambia el estado del radicado: sin evento."""
-    client, mock_conn, fake_redis = client_with_redis
+    client, mock_conn, eventos = client_with_eventos
     rid = uuid.uuid4()
     # `radicado_estado_y_tipo` (fetchrow) + la fila de la solicitud. El tipo es
     # "S": una Entrada NO se anula, y ese caso tiene su propio test.
@@ -279,15 +279,14 @@ async def test_solicitar_no_emite_evento(client_with_redis) -> None:
     )
 
     assert resp.status_code == 201
-    fake_redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 @pytest.mark.asyncio
-async def test_aprobar_evento_best_effort_no_revierte_anulacion(client_with_redis) -> None:
-    """Si Redis falla al publicar, la anulación NO se revierte (evento best-effort,
-    gemelo de `test_create_document_survives_event_failure`)."""
-    client, mock_conn, fake_redis = client_with_redis
-    fake_redis.xadd.side_effect = RuntimeError("redis down")
+async def test_aprobar_publica_en_la_conexion_del_acto(client_with_eventos) -> None:
+    """ADR-049: el evento va en la conexión (y la transacción) de la decisión, gemelo de
+    `test_create_document_publica_en_la_conexion_del_acto`."""
+    client, mock_conn, eventos = client_with_eventos
     rid = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         _clearance_row(),  # resolve_caller_clearance
@@ -304,8 +303,9 @@ async def test_aprobar_evento_best_effort_no_revierte_anulacion(client_with_redi
         headers={**TENANT_HEADERS, "X-User-Id": _SUPERVISOR},
     )
 
-    assert resp.status_code == 200  # la anulación se aplicó pese al fallo de Redis
+    assert resp.status_code == 200
     assert resp.json()["estado"] == "aprobada"
+    assert [c for c, _s, _e in eventos] == [mock_conn]
 
 
 # ---------------------------------------------------------------------------

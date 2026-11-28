@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
-    redis_url: str = "redis://redis:6379/0"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
 

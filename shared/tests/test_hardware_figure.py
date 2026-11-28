@@ -75,9 +75,8 @@ def test_published_once() -> None:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "2026-11: the default profile adds up to 13.5 CPU / 20.75 GB of limits (Keycloak, Redis, "
-        "MinIO, app, worker...). The figure is the target of ADR-047/048/049; remove this mark "
-        "when the manifest fits."
+        "2026-11: the default profile still adds more limits than the published figure. The "
+        "figure is the target of ADR-047..050; remove this mark when the manifest fits."
     ),
 )
 def test_manifest_fits_the_published_figure() -> None:

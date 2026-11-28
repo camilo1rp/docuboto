@@ -10,7 +10,7 @@
 """
 Test fixtures for workflow-service.
 
-DB dependency (get_db_conn) and Redis (get_redis) are both mocked so tests
+DB dependency (get_db_conn) is mocked and bus publishing is recorded so tests
 run without real infrastructure.
 """
 
@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator, Generator
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -131,10 +132,54 @@ def _make_mock_conn() -> AsyncMock:
     return conn
 
 
-def _make_mock_redis() -> MagicMock:
-    redis = MagicMock()
-    redis.xadd = AsyncMock(return_value="1-0")
-    return redis
+class EventosPublicados(list):
+    """Lo que `events.publish` habría insertado: `(conn, stream, sobre)` por evento."""
+
+    def de_tipo(self, event_type: str) -> list[dict[str, Any]]:
+        return [e for _c, _s, e in self if e["event_type"] == event_type]
+
+    def tipos(self) -> list[str]:
+        return [e["event_type"] for _c, _s, e in self]
+
+    def llamadas(self) -> list[tuple[str, dict[str, str]]]:
+        """`(stream, campos planos)` por evento: la forma que se guarda en `eventos.sobre`."""
+        from orpycamcp_common import events
+
+        return [(st, events.to_fields(e)) for _c, st, e in self]
+
+    def ultima(self) -> tuple[str, dict[str, str]]:
+        return self.llamadas()[-1]
+
+    def conexiones(self) -> list[object]:
+        return [c for c, _s, _e in self]
+
+
+@pytest.fixture(autouse=True)
+def eventos_publicados(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> EventosPublicados:
+    """Graba lo publicado en el bus (ADR-049) sin tocar la conexión simulada.
+
+    Publicar (el reloj de la BASE y el INSERT en `eventos`) consumiría las cadenas
+    de `fetchval` que cada prueba prepara; se sustituye por un grabador que conserva
+    la conexión usada, para comprobar que fue la del acto. En el carril de
+    integración (Postgres real) NO se sustituye.
+    """
+    grabados = EventosPublicados()
+    if "integration" in request.node.nodeid:
+        return grabados
+    from orpycamcp_common import events
+
+    async def _reloj(_conn: object) -> datetime:
+        return datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
+
+    async def _publicar(conn: object, stream: str, event: dict[str, Any]) -> int:
+        grabados.append((conn, stream, event))
+        return len(grabados)
+
+    monkeypatch.setattr(events, "reloj_bd", _reloj)
+    monkeypatch.setattr(events, "publish", _publicar)
+    return grabados
 
 
 @pytest.fixture(autouse=True)
@@ -178,19 +223,19 @@ def _sin_sincronizacion_de_estado() -> Generator[AsyncMock, None, None]:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, MagicMock], None]:
-    """Yields (client, mock_conn, mock_redis) so tests can configure mocks per-call."""
+async def client_with_conn(
+    eventos_publicados: EventosPublicados,
+) -> AsyncGenerator[tuple[AsyncClient, AsyncMock, EventosPublicados], None]:
+    """Yields (client, mock_conn, eventos_publicados) so tests can configure mocks per-call."""
     mock_conn = _make_mock_conn()
-    mock_redis = _make_mock_redis()
 
     async def override_get_db_conn() -> AsyncGenerator[AsyncMock, None]:
         yield mock_conn
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    with patch("workflow.services.workflow_service.get_redis", return_value=mock_redis):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            yield ac, mock_conn, mock_redis
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac, mock_conn, eventos_publicados
 
     app.dependency_overrides.clear()
 
@@ -199,15 +244,13 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, Mag
 async def client() -> AsyncGenerator[AsyncClient, None]:
     """Simple client — use when you don't need to inspect mock internals."""
     mock_conn = _make_mock_conn()
-    mock_redis = _make_mock_redis()
 
     async def override_get_db_conn() -> AsyncGenerator[AsyncMock, None]:
         yield mock_conn
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    with patch("workflow.services.workflow_service.get_redis", return_value=mock_redis):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            yield ac
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
 
     app.dependency_overrides.clear()

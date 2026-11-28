@@ -44,7 +44,7 @@ def _raw_fields(
 
     Pasa por `to_fields` en vez de construir el diccionario a mano. La diferencia
     importa desde que el sobre va firmado: un diccionario armado aquí es
-    exactamente lo que fabricaría quien escribiera en Redis por su cuenta, así
+    exactamente lo que fabricaría quien escribiera en el bus por su cuenta, así
     que estos tests estarían afirmando que el consumidor acepta sobres sin
     origen — justo lo que se corrigió.
     """

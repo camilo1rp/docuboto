@@ -21,7 +21,7 @@ from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.rbac import resolve_caller_clearance
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.core.dependencies import get_redis, get_tenant_client
+from document.core.dependencies import get_tenant_client
 from document.schemas.document import DocumentResponse
 from document.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
 from document.services.document_service import (
@@ -51,9 +51,9 @@ def _optional_canal(request: Request) -> str:
     return canal_de(request)
 
 
-def _service(conn, slug, tenant_client, redis) -> DocumentService:
+def _service(conn, slug, tenant_client) -> DocumentService:
     try:
-        return DocumentService(conn, slug, tenant_client, redis)
+        return DocumentService(conn, slug, tenant_client)
     except InvalidTenantError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -74,7 +74,6 @@ async def crear_respuesta(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
 ) -> DocumentResponse:
     """Crea una Salida vinculada a este radicado.
 
@@ -82,7 +81,7 @@ async def crear_respuesta(
     clearance del llamante. La Salida hereda el asunto del antecedente, así que
     sin este gate el endpoint era una vía de exfiltración.
     """
-    service = _service(conn, _slug(request), tenant_client, redis)
+    service = _service(conn, _slug(request), tenant_client)
     clearance = await resolve_caller_clearance(conn, _user(request))
     try:
         return await service.crear_respuesta(document_id, payload, _user(request), clearance)
@@ -110,10 +109,9 @@ async def listar_respuestas(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
-    redis: Any = Depends(get_redis),
     canal: str = Depends(_optional_canal),
 ) -> list[RespuestaItem]:
-    service = _service(conn, _slug(request), tenant_client, redis)
+    service = _service(conn, _slug(request), tenant_client)
     user_id = _user(request)
     # No-read-up (RF-SEG-08): el clearance del llamante acota qué Salidas
     # vinculadas se listan (fail-closed a PUBLICA sin identidad).

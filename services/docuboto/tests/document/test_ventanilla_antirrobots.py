@@ -18,11 +18,15 @@ Lo que fija, en orden de importancia:
 
 1. Un reto sirve UNA vez (409 `antirrobots_usado`). Mutación: aceptar un reto ya
    usado debe tumbar `test_un_reto_ya_usado_no_radica_dos_veces`.
-2. Redis caído => 503, fail-closed, y no se sube ningún anexo ni se gasta número.
+2. Sin poder anotar el consumo (la base falla) => 503, fail-closed, y no se sube
+   ningún anexo ni se gasta número.
 3. El reintento por `Idempotency-Key` NO exige un reto nuevo (devuelve lo ya radicado).
 4. Un 409 de política quema el reto (declarado en el diseño).
 5. Ventanilla y PQRS pasan por el mismo gate.
-6. Emitir un reto no toca la base de datos ni Redis.
+6. Emitir un reto no toca la base de datos.
+
+El consumo vive en la tabla `altcha_usados` (ADR-049); aquí la sustituye un doble que
+responde a ese SQL sobre la conexión simulada.
 """
 
 from __future__ import annotations
@@ -34,10 +38,8 @@ import pytest
 
 from docuboto.config import document as settings
 from document.core import altcha
-from document.core.dependencies import get_redis
 from document.schemas.public import VentanillaRespuesta
 from document.services.ventanilla_service import VentanillaService
-from tests.document.app import app
 from tests.document.test_ventanilla import (
     BASE,
     PDF,
@@ -49,32 +51,59 @@ from tests.document.test_ventanilla import (
 )
 
 
-class RedisUnaVez:
-    """Doble mínimo de `SET key val NX EX n`: recuerda las claves y su TTL."""
+class AltchaUnaVez:
+    """Doble de `altcha_usados`: `INSERT … ON CONFLICT DO NOTHING RETURNING challenge`.
+
+    Recuerda cada reto consumido con la vida (segundos) que pidió el código. Con
+    `caido=True`, toda consulta a la tabla falla, como una base que no responde.
+    """
 
     def __init__(self, caido: bool = False) -> None:
-        self.claves: dict[str, int | None] = {}
+        self.usados: dict[str, int] = {}
         self.caido = caido
 
-    async def ping(self) -> bool:
+    def responde(self, sql: str, args: tuple):  # type: ignore[no-untyped-def]
+        """`(True, valor)` si la consulta es de la tabla; `(False, None)` si no."""
+        if "altcha_usados" not in sql:
+            return False, None
         if self.caido:
-            raise ConnectionError("redis caído")
-        return True
+            raise ConnectionError("la base no responde")
+        if sql.lstrip().upper().startswith("DELETE"):
+            return True, "DELETE 0"
+        challenge, ttl = args
+        if challenge in self.usados:
+            return True, None
+        self.usados[challenge] = ttl
+        return True, challenge
 
-    async def set(self, clave, valor, *, nx=False, ex=None):  # type: ignore[no-untyped-def]
-        if self.caido:
-            raise ConnectionError("redis caído")
-        if nx and clave in self.claves:
-            return None
-        self.claves[clave] = ex
-        return True
+
+def _instalar(conn, doble: AltchaUnaVez, fetchval=None) -> None:  # type: ignore[no-untyped-def]
+    """Pone el doble delante de `fetchval`/`execute` de la conexión simulada."""
+    conn.altcha_doble = doble
+    previo_execute = conn.execute.side_effect
+
+    async def _fetchval(sql, *args, **kw):  # type: ignore[no-untyped-def]
+        es, valor = doble.responde(sql, args)
+        if es:
+            return valor
+        return await fetchval(sql, *args, **kw) if fetchval else None
+
+    async def _execute(sql, *args, **kw):  # type: ignore[no-untyped-def]
+        es, valor = doble.responde(sql, args)
+        if es:
+            return valor
+        return await previo_execute(sql, *args, **kw) if previo_execute else "OK"
+
+    conn.fetchval.side_effect = _fetchval
+    conn.execute.side_effect = _execute
 
 
 @pytest.fixture
-def redis_doble() -> RedisUnaVez:
-    r = RedisUnaVez()
-    app.dependency_overrides[get_redis] = lambda: r
-    return r
+def altcha_doble(client_with_conn) -> AltchaUnaVez:  # type: ignore[no-untyped-def]
+    _client, conn = client_with_conn
+    doble = AltchaUnaVez()
+    _instalar(conn, doble)
+    return doble
 
 
 async def _payload_valido(client, tenant: str = "demo") -> str:
@@ -85,8 +114,9 @@ async def _payload_valido(client, tenant: str = "demo") -> str:
     return altcha.codificar_payload(reto, altcha.resolver_reto(reto))
 
 
-def _preparar(conn) -> None:
-    conn.fetchval.side_effect = _fetchval_por_consulta("Derecho de petición", "cod")
+def _preparar(conn, doble: AltchaUnaVez | None = None) -> None:
+    doble = doble or getattr(conn, "altcha_doble", None) or AltchaUnaVez()
+    _instalar(conn, doble, _fetchval_por_consulta("Derecho de petición", "cod"))
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
 
@@ -101,7 +131,7 @@ def _crear():
 
 
 @pytest.mark.asyncio
-async def test_emitir_un_reto_no_toca_ni_la_base_ni_redis(client_with_conn, redis_doble) -> None:
+async def test_emitir_un_reto_no_toca_la_base(client_with_conn, altcha_doble) -> None:
     client, conn = client_with_conn
     resp = await client.get(f"{BASE}/reto")
 
@@ -110,13 +140,15 @@ async def test_emitir_un_reto_no_toca_ni_la_base_ni_redis(client_with_conn, redi
     cuerpo = resp.json()
     assert set(cuerpo) == {"algorithm", "challenge", "maxnumber", "salt", "signature"}
     assert cuerpo["maxnumber"] == settings.altcha_maxnumber
-    assert conn.mock_calls == [], "emitir un reto es puro cálculo: nada de base de datos"
-    assert redis_doble.claves == {}, "emitir no consume nada: se consume al radicar"
+    assert conn.fetchval.await_count == 0 and conn.execute.await_count == 0, (
+        "emitir un reto es puro cálculo: nada de base de datos"
+    )
+    assert altcha_doble.usados == {}, "emitir no consume nada: se consume al radicar"
 
 
 @pytest.mark.asyncio
 async def test_un_reto_emitido_para_una_entidad_no_sirve_en_otra(
-    client_with_conn, redis_doble
+    client_with_conn, altcha_doble
 ) -> None:
     client, conn = client_with_conn
     _preparar(conn)
@@ -141,7 +173,7 @@ async def test_el_reto_con_slug_invalido_es_400(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_un_reto_bueno_radica_y_queda_consumido_con_su_ttl(
-    client_with_conn, redis_doble
+    client_with_conn, altcha_doble
 ) -> None:
     """Control positivo + TTL de la marca de «usado» = lo que le resta al reto + holgura."""
     client, conn = client_with_conn
@@ -153,14 +185,14 @@ async def test_un_reto_bueno_radica_y_queda_consumido_con_su_ttl(
 
     assert resp.status_code == 201, resp.text
     crear.assert_awaited_once()
-    (clave, ttl), = redis_doble.claves.items()
-    assert clave.startswith("altcha:usado:demo:") and len(clave.rsplit(":", 1)[1]) == 64
+    (challenge, ttl), = altcha_doble.usados.items()
+    assert len(challenge) == 64
     esperado = settings.altcha_ttl_segundos + settings.altcha_skew_segundos
     assert esperado - 5 <= ttl <= esperado
 
 
 @pytest.mark.asyncio
-async def test_un_reto_ya_usado_no_radica_dos_veces(client_with_conn, redis_doble) -> None:
+async def test_un_reto_ya_usado_no_radica_dos_veces(client_with_conn, altcha_doble) -> None:
     client, conn = client_with_conn
     _preparar(conn)
     payload = await _payload_valido(client)
@@ -177,7 +209,7 @@ async def test_un_reto_ya_usado_no_radica_dos_veces(client_with_conn, redis_dobl
 
 @pytest.mark.asyncio
 async def test_sin_payload_altcha_no_se_radica_ni_en_ventanilla_ni_en_pqrs(
-    client_with_conn, redis_doble
+    client_with_conn, altcha_doble
 ) -> None:
     client, conn = client_with_conn
     _preparar(conn)
@@ -196,7 +228,7 @@ async def test_sin_payload_altcha_no_se_radica_ni_en_ventanilla_ni_en_pqrs(
 
 
 @pytest.mark.asyncio
-async def test_pqrs_pasa_por_el_mismo_gate(client_with_conn, redis_doble) -> None:
+async def test_pqrs_pasa_por_el_mismo_gate(client_with_conn, altcha_doble) -> None:
     client, conn = client_with_conn
     _preparar(conn)
     payload = await _payload_valido(client)
@@ -220,7 +252,7 @@ async def test_pqrs_pasa_por_el_mismo_gate(client_with_conn, redis_doble) -> Non
 
 
 @pytest.mark.asyncio
-async def test_un_reto_vencido_se_rechaza(client_with_conn, redis_doble) -> None:
+async def test_un_reto_vencido_se_rechaza(client_with_conn, altcha_doble) -> None:
     client, conn = client_with_conn
     _preparar(conn)
     reto = altcha.emitir_reto(
@@ -233,15 +265,15 @@ async def test_un_reto_vencido_se_rechaza(client_with_conn, redis_doble) -> None
     assert resp.status_code == 422
     assert resp.json()["detail"]["error"] == "antirrobots_vencido"
     crear.assert_not_awaited()
-    assert redis_doble.claves == {}, "un reto vencido no deja marca en Redis"
+    assert altcha_doble.usados == {}, "un reto vencido no deja marca"
 
 
 @pytest.mark.asyncio
-async def test_redis_caido_es_503_y_no_sube_anexos_ni_gasta_numero(client_with_conn) -> None:
+async def test_sin_poder_anotar_el_consumo_es_503_y_no_sube_anexos_ni_gasta_numero(
+    client_with_conn,
+) -> None:
     client, conn = client_with_conn
-    _preparar(conn)
-    caido = RedisUnaVez(caido=True)
-    app.dependency_overrides[get_redis] = lambda: caido
+    _preparar(conn, AltchaUnaVez(caido=True))
     payload = await _payload_valido(client)
 
     with (
@@ -263,7 +295,7 @@ async def test_redis_caido_es_503_y_no_sube_anexos_ni_gasta_numero(client_with_c
 
 @pytest.mark.asyncio
 async def test_sin_clave_configurada_no_se_emite_ni_se_verifica(
-    client_with_conn, redis_doble, monkeypatch
+    client_with_conn, altcha_doble, monkeypatch
 ) -> None:
     client, _ = client_with_conn
     monkeypatch.setattr(settings, "altcha_hmac_key", "")
@@ -274,7 +306,7 @@ async def test_sin_clave_configurada_no_se_emite_ni_se_verifica(
 
 @pytest.mark.asyncio
 async def test_el_reintento_con_la_misma_idempotency_key_no_pide_un_reto_nuevo(
-    client_with_conn, redis_doble
+    client_with_conn, altcha_doble
 ) -> None:
     """El reintento reenvía el MISMO reto, ya consumido, y debe recibir el radicado ya hecho.
 
@@ -309,7 +341,7 @@ async def test_el_reintento_con_la_misma_idempotency_key_no_pide_un_reto_nuevo(
 
 
 @pytest.mark.asyncio
-async def test_la_huella_de_idempotencia_no_incluye_el_reto(client_with_conn, redis_doble) -> None:
+async def test_la_huella_de_idempotencia_no_incluye_el_reto(client_with_conn, altcha_doble) -> None:
     client, conn = client_with_conn
     _preparar(conn)
     vistas: list[str] = []
@@ -329,7 +361,7 @@ async def test_la_huella_de_idempotencia_no_incluye_el_reto(client_with_conn, re
 
 
 @pytest.mark.asyncio
-async def test_un_409_de_politica_quema_el_reto(client_with_conn, redis_doble) -> None:
+async def test_un_409_de_politica_quema_el_reto(client_with_conn, altcha_doble) -> None:
     """Declarado en el diseño: el cliente pide otro reto (cuesta milisegundos)."""
     client, conn = client_with_conn
     _preparar(conn)
@@ -352,7 +384,7 @@ async def test_un_409_de_politica_quema_el_reto(client_with_conn, redis_doble) -
 
 
 @pytest.mark.asyncio
-async def test_el_gate_va_antes_de_subir_anexos(client_with_conn, redis_doble) -> None:
+async def test_el_gate_va_antes_de_subir_anexos(client_with_conn, altcha_doble) -> None:
     client, conn = client_with_conn
     _preparar(conn)
     with (
@@ -380,7 +412,7 @@ _PARAMS_ENTIDAD = [
 
 @pytest.mark.asyncio
 async def test_el_estado_dice_si_el_antirrobots_esta_disponible_y_el_contacto(
-    client_with_conn, redis_doble
+    client_with_conn, altcha_doble
 ) -> None:
     client, conn = client_with_conn
     conn.fetch.return_value = _PARAMS_ENTIDAD
@@ -399,16 +431,9 @@ async def test_el_estado_dice_si_el_antirrobots_esta_disponible_y_el_contacto(
 
 
 @pytest.mark.asyncio
-async def test_sin_redis_o_sin_clave_el_estado_lo_dice(
-    client_with_conn, monkeypatch
-) -> None:
+async def test_sin_clave_el_estado_lo_dice(client_with_conn, monkeypatch) -> None:
     client, conn = client_with_conn
     conn.fetch.return_value = []
-    caido = RedisUnaVez(caido=True)
-    app.dependency_overrides[get_redis] = lambda: caido
-    assert (await client.get(f"{BASE}/estado")).json()["antirrobots_disponible"] is False
-
-    app.dependency_overrides[get_redis] = lambda: RedisUnaVez()
     assert (await client.get(f"{BASE}/estado")).json()["antirrobots_disponible"] is True  # control
     monkeypatch.setattr(settings, "altcha_hmac_key", "corta")
     assert (await client.get(f"{BASE}/estado")).json()["antirrobots_disponible"] is False
@@ -422,7 +447,7 @@ async def test_el_503_del_antirrobots_lleva_el_contacto_real_de_la_entidad(
     client, conn = client_with_conn
     _preparar(conn)
     conn.fetch.return_value = _PARAMS_ENTIDAD
-    app.dependency_overrides[get_redis] = lambda: RedisUnaVez(caido=True)
+    _preparar(conn, AltchaUnaVez(caido=True))
     payload = await _payload_valido(client)
 
     with _crear() as crear:
@@ -442,7 +467,7 @@ async def test_sin_parametros_de_contacto_el_503_no_inventa_ninguno(client_with_
     client, conn = client_with_conn
     _preparar(conn)
     conn.fetch.return_value = []
-    app.dependency_overrides[get_redis] = lambda: RedisUnaVez(caido=True)
+    _preparar(conn, AltchaUnaVez(caido=True))
     payload = await _payload_valido(client)
     with _crear():
         resp = await client.post(BASE, **_multipart(_cuerpo(altcha=payload)))

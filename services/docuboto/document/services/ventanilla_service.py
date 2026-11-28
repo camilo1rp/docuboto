@@ -85,13 +85,10 @@ class VentanillaService:
         conn: asyncpg.Connection,
         tenant_slug: str,
         tenant_client: Any = None,
-        redis: Any = None,
     ) -> None:
         self._conn = conn
         self._tenant = tenant_slug
         self._tenant_client = tenant_client
-        # Antirreplay del reto ALTCHA (C16). Sin Redis no se radica: fail-closed.
-        self._redis = redis
 
     async def _exigir_antirrobots(self, payload: VentanillaRadicacion) -> None:
         """Verifica y CONSUME el reto ALTCHA. Único punto de la puerta pública (C16).
@@ -100,7 +97,7 @@ class VentanillaService:
         antirrobots no está disponible, el 503 lleva el contacto REAL de la entidad.
         """
         try:
-            await antirrobots.exigir_reto(self._redis, payload.altcha, self._tenant)
+            await antirrobots.exigir_reto(self._conn, payload.altcha, self._tenant)
         except HTTPException as exc:
             detalle: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
             if exc.status_code == 503 and detalle.get("error") == "antirrobots_no_disponible":
@@ -292,7 +289,7 @@ class VentanillaService:
             dependencia_receptora=receptora,
             tipos_admitidos=tipos,
             politica_publicada=(await self._politica()).publicada,
-            antirrobots_disponible=await antirrobots.disponible(self._redis),
+            antirrobots_disponible=antirrobots.disponible(),
             contacto=await self._contacto_entidad(),
         )
 

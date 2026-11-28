@@ -98,8 +98,9 @@ It only removes code, and it stops today's default of sending content to ollama.
   - A pseudonymous `on_behalf_of`, with the officer's real clearance capped at the highest
     enabled level.
 - **document-service.** Internal routes for a record and for attachment bytes, which
-  re-check the level and leave an access-trail entry. Two new outbox events: attachment
-  added and record changed.
+  re-check the level and leave an access-trail entry. Two new events, published in the
+  transaction of the change (then the `042_eventos_salientes` outbox; since ADR-049, the
+  `eventos` table): attachment added and record changed.
 - **tenant-service.** `GET`/`PUT /api/v1/config/intelligence` with a transmission
   declaration naming the provider and its subprocessors, plus a withdraw act. The same
   `PUT` turns `intelligence_send_metadata` on or off (default off): when on, metadata

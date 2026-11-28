@@ -23,7 +23,6 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-import redis.asyncio as aioredis
 from fastapi import FastAPI
 from orpycamcp_common import request_log
 from orpycamcp_common import secrets as common_secrets
@@ -38,7 +37,7 @@ from auth.jobs.signing_key_maintenance import maintenance_loop
 from auth.services.auth_service import AuthService
 from docuboto import config as settings
 from docuboto.config import variables_retiradas_presentes
-from docuboto.core.pools import bind_pool, bind_redis, crear_pool, unbind_pool, unbind_redis
+from docuboto.core.pools import bind_pool, crear_pool, unbind_pool
 from docuboto.core.tasks import BackgroundTasks, heavy_slot
 from docuboto.core.trabajo import COLA_APP, COLA_WORKER
 from docuboto.core.trabajo import bucle as bucle_trabajo
@@ -154,10 +153,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db_pool = pool
     registrar_apertura_de_flujo(abrir_al_radicar)
 
-    redis_client = aioredis.from_url(settings.common.redis_url, decode_responses=True)
-    bind_redis(redis_client)
-    app.state.redis = redis_client
-
     init_minio(
         settings.storage.minio_endpoint,
         settings.storage.minio_access_key,
@@ -182,7 +177,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             lambda: bucle_de_sondeo(pool, settings.document.email_sondeo_tenant_slug),
         )
     if settings.document.barrido_enabled:
-        tareas.start("barrido", lambda: bucle_de_barrido(app.state.redis))
+        tareas.start("barrido", bucle_de_barrido)
     tareas.start("workflow", workflow_consumer.run, supervised=True)
     tareas.start("notification", stream_worker.run, supervised=True)
     tareas.start("signature", signature_consumer.run, supervised=True)
@@ -201,8 +196,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("docuboto shutting down")
     await tareas.stop()
     await salida_http.cerrar_consulta()
-    await redis_client.aclose()
-    unbind_redis()
     await pool.close()
     unbind_pool()
     registrar_apertura_de_flujo(None)

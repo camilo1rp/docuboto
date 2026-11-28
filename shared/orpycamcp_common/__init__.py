@@ -13,7 +13,7 @@ Fuente única de verdad para lógica transversal delicada (ADR-010):
 
 - ``audit``  — escritura en ``public.audit_log`` con cadena de hash por tenant
                (ADR-008). Único punto de escritura de auditoría.
-- ``events`` — sobre canónico de eventos Redis Streams + publicación/consumo
+- ``events`` — sobre canónico de eventos y su bus en PostgreSQL + publicación/consumo
                idempotente (00-contrato-eventos.md), y la supervisión de los
                consumidores (``spawn_supervised``).
 - ``health`` — separación entre sonda de vivacidad y sonda de disponibilidad.

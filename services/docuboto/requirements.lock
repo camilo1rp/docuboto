@@ -46,10 +46,6 @@ asn1crypto==1.5.1
     # via
     #   -c /private/tmp/claude-501/-Users-camiloromero-Projects-docuboto--claude-worktrees-adr-047-un-proceso-adf1b8/cc6fe4c4-33e4-4f79-a310-4d20695954c7/scratchpad/cons.txt
     #   -r services/docuboto/requirements.txt
-async-timeout==5.0.1
-    # via
-    #   -c /private/tmp/claude-501/-Users-camiloromero-Projects-docuboto--claude-worktrees-adr-047-un-proceso-adf1b8/cc6fe4c4-33e4-4f79-a310-4d20695954c7/scratchpad/cons.txt
-    #   redis
 asyncpg==0.31.0
     # via
     #   -c /private/tmp/claude-501/-Users-camiloromero-Projects-docuboto--claude-worktrees-adr-047-un-proceso-adf1b8/cc6fe4c4-33e4-4f79-a310-4d20695954c7/scratchpad/cons.txt
@@ -258,10 +254,6 @@ pyyaml==6.0.3
     # via
     #   -c /private/tmp/claude-501/-Users-camiloromero-Projects-docuboto--claude-worktrees-adr-047-un-proceso-adf1b8/cc6fe4c4-33e4-4f79-a310-4d20695954c7/scratchpad/cons.txt
     #   uvicorn
-redis==8.1.0
-    # via
-    #   -c /private/tmp/claude-501/-Users-camiloromero-Projects-docuboto--claude-worktrees-adr-047-un-proceso-adf1b8/cc6fe4c4-33e4-4f79-a310-4d20695954c7/scratchpad/cons.txt
-    #   -r services/docuboto/requirements.txt
 referencing==0.37.0
     # via
     #   -c /private/tmp/claude-501/-Users-camiloromero-Projects-docuboto--claude-worktrees-adr-047-un-proceso-adf1b8/cc6fe4c4-33e4-4f79-a310-4d20695954c7/scratchpad/cons.txt

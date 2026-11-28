@@ -21,7 +21,7 @@ CREATE TABLE evento_dead_letter (
     CONSTRAINT evento_dead_letter_pkey PRIMARY KEY (origin_group, event_id)
 );
 
-COMMENT ON TABLE evento_dead_letter IS 'Copia durable (Postgres) de los eventos aparcados en el dead-letter de Redis. Tabla COMPARTIDA por los consumidores del tenant: la PK (origin_group, event_id) deja que cada grupo aparque el mismo evento una vez; repetir el mismo par es idempotente (ON CONFLICT (origin_group, event_id) DO NOTHING). El INSERT y el audit_log se escriben en la misma transacción (R-4, ADR-021).';
+COMMENT ON TABLE evento_dead_letter IS 'Eventos aparcados tras agotar sus entregas (ADR-021, ADR-049). Tabla COMPARTIDA por los consumidores del tenant: la PK (origin_group, event_id) deja que cada grupo aparque el mismo evento una vez; repetir el mismo par es idempotente (ON CONFLICT (origin_group, event_id) DO NOTHING). El INSERT y el audit_log se escriben en la misma transacción (R-4, ADR-021).';
 
 COMMENT ON COLUMN evento_dead_letter.payload IS 'Sobre íntegro del evento (event_id, event_type, tenant_slug, occurred_at, actor, payload de negocio). Autosuficiente para reconstrucción forense (Ley 594/2000 art. 19).';
 

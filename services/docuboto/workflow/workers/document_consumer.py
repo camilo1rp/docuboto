@@ -16,11 +16,13 @@ el radicado (distribution.auto_distribute). Por cada
 activos. Usa el sobre canónico de orpycamcp_common y un grupo de consumidores
 propio.
 
-Dead-letter / reclamación (R-4, ADR-021 Fase 2):
-  - Barrido periódico de la PEL con `reclaim_stale` (cadencia 30 s).
-  - Mensajes que superan `max_deliveries=5` se mueven al dead-letter stream y
-    se persisten durablemente en `evento_dead_letter` + `audit_log` en la misma
-    transacción (no hay dead-letter sin traza durable).
+El bucle es el del bus en PostgreSQL (`docuboto.core.bus`, ADR-049).
+
+Dead-letter / reclamación (R-4, ADR-021):
+  - El bus reclama lo atascado cada 30 s (`events.reclaim_stale`).
+  - Lo que supera `max_deliveries=5` se persiste durablemente en
+    `evento_dead_letter` + `audit_log` en la misma transacción, y solo entonces
+    se confirma (no hay dead-letter sin traza durable).
   - R1: evento sin tenant_slug → traza bajo SYSTEM_TENANT en `public.audit_log`
     (en vez de solo loguear) para que incluso el poison pill malformado deje
     registro inmutable.
@@ -28,20 +30,17 @@ Dead-letter / reclamación (R-4, ADR-021 Fase 2):
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import time
 from datetime import UTC, date, datetime
 from datetime import time as hora
 
-import redis.exceptions as redis_exc
 from orpycamcp_common import events
 from orpycamcp_common.database import acquire_tenant, get_pool
 
 from docuboto.config import workflow as settings
+from docuboto.core import bus
 from workflow.core.constants import DLQ_GROUP
-from workflow.core.redis_client import get_redis
 from workflow.jobs import deadletter_retention
 from workflow.repositories.dead_letter_repository import DeadLetterRepository
 from workflow.services.distribution import auto_distribute
@@ -58,24 +57,14 @@ logger = logging.getLogger(__name__)
 
 DOCUMENT_STREAM = "orpycamcp.document.events"
 VENCIMIENTO_CAMBIADO = "document.radicado.due_date_changed"
-DEADLETTER_STREAM = "orpycamcp.workflow.deadletter"
 # Sourced from workflow.core.constants (single source of truth shared with
 # app/jobs/deadletter_retention.py and workflow/routers/admin_deadletter.py) — see
 # the docstring there for why this can't just be a local literal.
 GROUP = DLQ_GROUP
-CONSUMER = events.consumer_name("workflow-service")
 _SERVICE = "workflow-service"
 
-# Cadence for the PEL reclaim sweep (seconds).
-# Contract: min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block timeout (5 s)
-# — ensures a healthy consumer processing a message for up to 55 s is never
-# pre-empted by this sweep.
-RECLAIM_INTERVAL = 30.0
-
-# Cadence for the DLQ Redis buffer trim (ADR-021 Fase 4 — MVP-2).
-# Read once at import time so tests can patch the module constant independently
-# of the settings singleton.
-DLQ_TRIM_INTERVAL: float = float(settings.retention_interval_seconds)
+#: Cadencia del mantenimiento diario (retención de dead-letters terminales).
+DLQ_RETENTION_INTERVAL: float = float(settings.retention_interval_seconds)
 
 
 async def apply_distribution(conn, tenant_slug: str, payload: dict) -> str | None:
@@ -141,8 +130,8 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
     Writes the dead-letter event atomically to ``evento_dead_letter`` (Postgres)
     and ``audit_log`` **inside a single transaction**.  The callback is passed to
     ``reclaim_stale`` as ``on_dead_letter``; under the R-4 contract the helper
-    gates the XACK on this callback's success: if this function raises, the message
-    stays in the PEL for the next sweep — there is no dead-letter without a durable
+    gates the confirmation on this callback's success: if this function raises, the
+    delivery stays pending for the next sweep — there is no dead-letter without a durable
     trace.
 
     Edge case — permanently malformed event (no ``tenant_slug``) — R1 improvement:
@@ -150,20 +139,20 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
         infinite loop.  Unlike signature-service (which only logs), workflow-service
         writes an immutable entry in ``public.audit_log`` under SYSTEM_TENANT so
         even the poison pill leaves a durable trace.  If that audit write fails
-        (transient DB error), the exception propagates so the helper skips the XACK
-        and the message remains in the PEL for the next sweep.  After a successful
+        (transient DB error), the exception propagates so the helper does not confirm
+        and the delivery stays pending for the next sweep.  After a successful
         audit (or if the audit module is unavailable), returns normally so the
-        helper can XACK.
+        helper can confirm.
 
     Idempotency:
         ``INSERT … ON CONFLICT (origin_group, event_id) DO NOTHING RETURNING event_id`` — a
         second call with the same ``event_id`` returns None (no row), and the
-        ``audit_log`` write is skipped.  This prevents a double-trace if XADD
-        succeeded but XACK failed (at-least-once redelivery).
+        ``audit_log`` write is skipped.  This prevents a double-trace if the insert
+        succeeded but the confirmation failed (at-least-once redelivery).
 
     Transient errors (DB down, pool exhausted, etc.):
         Exceptions are **not caught** here.  They propagate to the helper which
-        logs a warning and skips the XACK — the message remains in the PEL and
+        logs a warning and does not confirm — the delivery stays pending and
         will be retried on the next reclaim sweep.  This is what closes R-4.
 
     R-9: ``actor`` is ``"system"`` — the worker performs this act, not the
@@ -199,7 +188,7 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
                         "note": "evento sin tenant_slug; registrado bajo SYSTEM_TENANT",
                     },
                 )
-        # Return normally so the helper can XACK the poison pill — retrying an
+        # Return normally so the helper can confirm the poison pill — retrying an
         # event without tenant_slug would loop forever (no tenant schema to write to).
         return
 
@@ -272,122 +261,18 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
 
 
 async def run() -> None:
-    """Long-running consumer loop. Cancel to shut down cleanly.
+    """Bucle del grupo `workflow-service` sobre el bus en PostgreSQL. Cancelar para cerrar.
 
-    Normal processing path (A-1 — ack-only-on-success, R-WF1 / ADR-021):
-      - xack is called ONLY if _handle succeeded.  A handler failure leaves
-        the message in the PEL (Pending Entries List); the reclaim sweep
-        (reclaim_stale) will pick it up, retry, and after max_deliveries=5
-        escalate it to the dead-letter stream with a durable Postgres record.
-      - CancelledError is always re-raised so the task shuts down cleanly.
-      - auto_distribute is idempotent (guard RN-8: get_next_step_number > 1
-        returns early), so re-processing an already-distributed radicado is
-        safe and produces no duplicate assignment.
-
-    Reclaim sweep (dead-letter, R-4 / ADR-021 Fase 2):
-      - Runs on cadence (RECLAIM_INTERVAL=30 s), separate from the normal loop.
-      - Messages that exceed max_deliveries=5 are durably persisted to
-        evento_dead_letter + audit_log before XACK (gated by on_dead_letter).
-      - A sweep failure logs a WARNING and does not crash the loop.
-
-    Cadence invariant: min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block (5 s).
+    Confirma solo si `_handle` tuvo éxito; un fallo deja la entrega pendiente y
+    la reclamación la reintenta y, a la quinta, la aparca con `_persist_dead_letter`.
+    `auto_distribute` es idempotente (guard RN-8), así que reintentar es seguro.
     """
-    redis = get_redis()
-    await events.ensure_group(redis, DOCUMENT_STREAM, GROUP)
-
-    # Track cadence for both the PEL reclaim sweep and the DLQ buffer trim.
-    # A single time.monotonic() call initialises both: _last_reclaim = _last_dlq_trim = t0.
-    # Reclaim fires every RECLAIM_INTERVAL (30 s); DLQ trim fires every DLQ_TRIM_INTERVAL
-    # (default 86 400 s / 24 h).  Deferring the first DLQ trim avoids hitting Redis before
-    # the connection is warm; the daily window is negligible vs. the 30-day horizon.
-    _last_reclaim = _last_dlq_trim = time.monotonic()
-
-    while True:
-        try:
-            messages = await redis.xreadgroup(
-                GROUP, CONSUMER, {DOCUMENT_STREAM: ">"}, count=10, block=5000
-            )
-        except asyncio.CancelledError:
-            raise
-        except (TimeoutError, redis_exc.TimeoutError):
-            # Normal: block= expired with no new entries — not an error; resume immediately.
-            messages = []
-        except Exception:
-            logger.warning("Error en el bucle del consumidor de workflow", exc_info=True)
-            await asyncio.sleep(5)
-            messages = []
-
-        for _stream, entries in messages or []:  # type: ignore[misc]
-            for msg_id, data in entries:  # type: ignore[union-attr]
-                try:
-                    await _handle(data)
-                    await redis.xack(DOCUMENT_STREAM, GROUP, msg_id)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    # R-5b: recuerda el error para que, si el mensaje queda huérfano, el
-                    # dead-letter lleve la causa y no un texto vacío.
-                    await events.record_failure(redis, GROUP, msg_id, exc)
-                    # A-1 (workflow, R-WF1): do NOT ack on failure.  The message
-                    # stays in the PEL and reclaim_stale will retry it; after
-                    # max_deliveries it escalates to the dead-letter stream with a
-                    # durable Postgres record.  auto_distribute is idempotent
-                    # (guard RN-8) so retrying is safe.
-                    logger.warning(
-                        "Fallo distribuyendo evento — permanece en PEL para reintento",
-                        exc_info=True,
-                    )
-
-        # Cadence gates — both share the same `now` snapshot (one monotonic call).
-        now = time.monotonic()
-
-        # PEL reclaim sweep: runs every RECLAIM_INTERVAL (30 s).
-        if now - _last_reclaim >= RECLAIM_INTERVAL:
-            try:
-                await events.reclaim_stale(
-                    redis,
-                    DOCUMENT_STREAM,
-                    GROUP,
-                    CONSUMER,
-                    handler=_handle,
-                    min_idle_ms=60_000,
-                    max_deliveries=5,
-                    deadletter_stream=DEADLETTER_STREAM,
-                    on_dead_letter=_persist_dead_letter,
-                    status_name="workflow",
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # A sweep failure must not crash the consumer loop.
-                logger.warning("Fallo en barrido de reclamación", exc_info=True)
-            _last_reclaim = now
-
-        # DLQ buffer trim: runs every DLQ_TRIM_INTERVAL (default 86 400 s / 24 h).
-        # Safe: authoritative copy is in Postgres; entries older than the horizon
-        # are guaranteed already mirrored (ADR-021 Fase 4 — MVP-2).
-        if now - _last_dlq_trim >= DLQ_TRIM_INTERVAL:
-            try:
-                await events.trim_deadletter(
-                    redis,
-                    DEADLETTER_STREAM,
-                    max_age_ms=settings.retention_dlq_days * 86_400_000,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("Fallo en trim del DLQ de workflow", exc_info=True)
-            # Purge terminal Postgres dead-letters on the same daily cadence as the
-            # Redis trim (ADR-021 Fase 4 — MVP-3).  Shares the gate to avoid a second
-            # monotonic variable; both are daily housekeeping with no strict ordering
-            # requirement between them.  A failure must not crash the loop or block the
-            # gate (the next daily cycle will retry).
-            try:
-                await deadletter_retention.run_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning(
-                    "Fallo en retención de dead-letters de workflow", exc_info=True
-                )
-            _last_dlq_trim = now
+    await bus.consumir(
+        group=GROUP,
+        streams=(DOCUMENT_STREAM,),
+        handler=_handle,
+        on_dead_letter=_persist_dead_letter,
+        status_name="workflow",
+        periodico=deadletter_retention.run_once,
+        intervalo_periodico=DLQ_RETENTION_INTERVAL,
+    )

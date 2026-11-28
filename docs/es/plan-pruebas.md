@@ -29,7 +29,7 @@ Un solo comando reconstruye el entorno entero desde cero:
 ./scripts/reset-entorno.sh --radicados 400 --expedientes 30
 ```
 
-**Destruye los volúmenes** de Postgres, el almacén de objetos y Redis, y pide una frase tecleada antes de
+**Destruye los volúmenes** de Postgres (con el bus de eventos) y el almacén de objetos, y pide una frase tecleada antes de
 hacerlo. Recrear en vez de restaurar un *snapshot* es deliberado: `public.audit_log` es
 append-only por Ley 594 —ni el `--purge` del seed lo toca—, así que la única forma de dejarlo
 limpio es recrear la base; sembrar por la API hace que cada documento **nazca con su asiento y

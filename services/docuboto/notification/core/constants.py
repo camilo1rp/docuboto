@@ -10,7 +10,7 @@
 """Service-identifying constants shared across modules that must NOT import
 each other directly (avoids a circular import between the worker and the job).
 
-``DLQ_GROUP`` is the single source of truth for this service's Redis consumer
+``DLQ_GROUP`` is the single source of truth for this service's event-bus consumer
 group name, which doubles as the ``origin_group`` value written to (and
 filtered on) the shared ``evento_dead_letter`` table — see the module-level
 note in ``notification/repositories/dead_letter_repository.py``. Every reader of
@@ -18,7 +18,7 @@ note in ``notification/repositories/dead_letter_repository.py``. Every reader of
 ``_persist_dead_letter``) MUST source the value from here rather than
 hardcoding the literal, so the three call sites can never drift apart.
 
-notification-service consumes TWO Redis streams (``orpycamcp.workflow.events``
+notification-service consumes TWO streams (``orpycamcp.workflow.events``
 and ``orpycamcp.document.events``) under a SINGLE consumer group — see
 ``app/workers/stream_worker.py``. Both streams' dead-letters therefore share
 this ONE ``origin_group``; they are distinguished from each other by

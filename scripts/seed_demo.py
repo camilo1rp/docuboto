@@ -21,7 +21,7 @@ para los tests: es una demostración navegable.
 
 Es más lento, y es la única forma honesta. Un seed por SQL directo dejaría
 radicados sin su asiento en `public.audit_log` —que es una cadena de hashes y se
-verifica entera—, sin sus eventos en Redis y sin entrar en el índice electrónico
+verifica entera—, sin sus eventos de dominio y sin entrar en el índice electrónico
 del expediente: un estado que el propio sistema **no habría podido producir**. Un
 demo cuyo propósito es enseñar cómo funciona el sistema no puede estar hecho de
 algo que el sistema no hace. Todo lo que se ve aquí pasó por el gateway, por su

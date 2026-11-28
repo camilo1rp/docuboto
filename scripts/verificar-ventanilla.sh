@@ -56,9 +56,9 @@ for slug in "${SLUGS[@]}"; do
         echo "SIN POLITICA   $slug  $cuerpo  (publique politica_tratamiento_* en /admin/parametros)"
         [ "$estado" -eq 2 ] || estado=1
     elif printf '%s' "$cuerpo" | grep -Eq '"antirrobots_disponible"[[:space:]]*:[[:space:]]*false'; then
-        # El estado publica si el antirrobots puede emitir y consumir retos AHORA (clave de
-        # >= 32 bytes y Redis que responde al PING): sin eso todo POST público da 503.
-        echo "SIN ANTIROBOTS $slug  antirrobots_disponible=false (ALTCHA_HMAC_KEY o Redis)  $cuerpo"
+        # El estado publica si el antirrobots puede emitir y consumir retos AHORA (clave
+        # de >= 32 bytes): sin eso todo POST público da 503.
+        echo "SIN ANTIROBOTS $slug  antirrobots_disponible=false (ALTCHA_HMAC_KEY)  $cuerpo"
         [ "$estado" -eq 2 ] || estado=1
     elif ! reto="$(curl -fsS --max-time 10 "$GATEWAY_URL/api/v1/public/$slug/ventanilla/reto")" \
         || ! printf '%s' "$reto" | grep -Eq '"challenge"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"'; then

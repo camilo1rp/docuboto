@@ -51,8 +51,8 @@ class _Anexo:
         self.file_id = file_id
 
 
-def _servicio(conn, redis=None):
-    return PurgaService(conn, "demo", redis=redis)
+def _servicio(conn):
+    return PurgaService(conn, "demo")
 
 
 @pytest.mark.asyncio
