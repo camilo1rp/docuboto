@@ -271,6 +271,10 @@ class DocumentSettings(CommonSettings):
     # (ADR-049). Es también la ventana de los datos personales que viajan en el
     # sobre; un consumidor parado más tiempo que esto pierde lo purgado.
     eventos_retencion_dias: int = Field(default=30, ge=1)
+    # Dead-letters ya resueltos o descartados (ADR-021, ADR-049 §4): se conservan
+    # este tiempo y luego se retiran. Lo pendiente no se purga nunca; la decisión
+    # sobre cada uno ya quedó en `audit_log`.
+    deadletter_retencion_dias: int = Field(default=90, ge=1)
 
     # Zona horaria con la que se decide el AÑO del número de radicado y la fecha
     # base del plazo de respuesta.
@@ -876,16 +880,7 @@ storage = StorageSettings()
 
 
 class WorkflowSettings(CommonSettings):
-
-    # How often (in seconds) the worker loop triggers the DLQ trim sweep.
-    retention_interval_seconds: int = 86400  # 24 h
-    # Dead-letter Postgres retention (ADR-021 Fase 4 — MVP-3).
-    # Grace period (in days) after which rows with status 'resolved' or 'discarded'
-    # are eligible for deletion from evento_dead_letter.  'pending' rows are NEVER
-    # purged — they represent unresolved failures awaiting human decision.
-    # 90 days gives forensic slack; legal copy lives in audit_log (immutable).
-    retention_deadletter_days: int = Field(default=90, ge=1)
-
+    """Workflow no tiene ajustes propios: su consumidor y su dead-letter son del bus."""
 
 
 workflow = WorkflowSettings()
@@ -904,10 +899,8 @@ class NotificationSettings(CommonSettings):
     # 7 days is generous: the actual redelivery / reclaim window is minutes.
     # ge=1 guards against a misconfigured 0/negative TTL purging in-flight markers.
     retention_dedup_days: int = Field(default=7, ge=1)
-    # How often (in seconds) the worker loop triggers the retention sweep.
+    # How often (in seconds) the worker loop triggers the dedup retention sweep.
     retention_interval_seconds: int = 86400  # 24 h
-
-
 
     # SSRF de webhooks salientes (hallazgo Media, auditoría de seguridad — no
     # bloqueante). `WebhookCreate.url` (app/schemas/webhook.py) validaba forma,
@@ -922,12 +915,6 @@ class NotificationSettings(CommonSettings):
     # closed por defecto, no al revés.
     webhook_allow_private_targets: bool = False
 
-    # evento_dead_letter terminal-row retention (ADR-021 Fase 4 — MVP-3, Fase 5 Inc.2).
-    # Grace period (days) after resolved_at before a resolved/discarded dead-letter
-    # row is purged. 'pending' rows are NEVER purged regardless of age (they await
-    # a human decision). ge=1 guards against a misconfigured 0/negative TTL that
-    # would widen the purge window to include very recent closures.
-    retention_deadletter_days: int = Field(default=90, ge=1)
 
     # ── Secreto HMAC de los webhooks, cifrado en reposo ───────────────────
     # El secreto con el que se firma cada entrega se guarda cifrado (AES-256-GCM,
@@ -998,15 +985,6 @@ class SignatureSettings(CommonSettings):
     # Cadencia del bucle (s). 0 = el job no se arranca (kill-switch).
     lta_renovacion_intervalo_s: int = Field(default=86400, ge=0)
     lta_renovacion_retraso_inicial_s: int = Field(default=120, ge=0)
-
-    # How often (in seconds) the worker loop triggers the DLQ trim sweep.
-    retention_interval_seconds: int = 86400  # 24 h
-    # Dead-letter Postgres retention (ADR-021 Fase 4 — MVP-3).
-    # Grace period (in days) after which rows with status 'resolved' or 'discarded'
-    # are eligible for deletion from evento_dead_letter.  'pending' rows are NEVER
-    # purged — they represent unresolved failures awaiting human decision.
-    # 90 days gives forensic slack; legal copy lives in audit_log (immutable).
-    retention_deadletter_days: int = Field(default=90, ge=1)
 
     # --- 2FA por OTP-correo en la firma personal (E06 Inc.2, RF-FIR-13) ---
     # Kill-switch: True (default) exige challenge_id+otp en POST /sign y POST

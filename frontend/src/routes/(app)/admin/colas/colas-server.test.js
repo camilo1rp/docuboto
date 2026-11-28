@@ -25,7 +25,7 @@ const parentWith =
 describe("load /admin/colas", () => {
   it("consulta el servicio por defecto 'workflow' con status=pending y propaga Authorization/X-Tenant-Slug/X-User-Id", async () => {
     const fetch = vi.fn(async (input) => {
-      expect(String(input)).toContain("/workflow/admin/deadletter/");
+      expect(String(input)).toContain("/admin/deadletter/workflow/");
       expect(String(input)).toContain("status=pending");
       return new Response(JSON.stringify([{ event_id: "e1" }]), {
         status: 200,

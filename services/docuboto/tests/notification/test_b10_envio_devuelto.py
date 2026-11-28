@@ -355,7 +355,7 @@ async def test_envio_purgado_no_manda_correo_y_no_lanza() -> None:
 
 @pytest.mark.asyncio
 async def test_replay_dlq_usa_el_mismo_nucleo() -> None:
-    from notification.routers import admin_deadletter
+    from notification.services import replay as admin_deadletter
     from notification.workers.stream_worker import DOCUMENT_STREAM
 
     ctx = ContextoDevolucion(
@@ -375,7 +375,7 @@ def test_el_nucleo_unico_es_el_que_usan_consumidor_y_reproceso() -> None:
     """Censo: ni el consumidor ni el reproceso llaman a un constructor de documento por su cuenta."""
     import inspect
 
-    from notification.routers import admin_deadletter
+    from notification.services import replay as admin_deadletter
 
     assert "construir_envios_documento" in inspect.getsource(event_consumer.process_document_event)
     assert "construir_envios_documento" in inspect.getsource(admin_deadletter._construir_envios)

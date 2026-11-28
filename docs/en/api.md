@@ -1503,16 +1503,16 @@ GET /api/v1/search?q=tutela&doc_type=E&date_from=2024-01-01&meta.area=juridica
 
 ## Dead-letter queue — admin (ADR-021 phase 5)
 
-Three services keep their own dead-letter queue for events they could not consume: `signature`, `workflow` and `notification` (**singular** — the path is `/api/v1/notification/...`, not `notifications`; the Spanish page said otherwise until 2026-08-29 and a mechanical route census caught it). knowledge-service no longer has a DLQ admin surface (ADR-046: no event consumer).
+One console (ADR-049 §4) serves the dead-letters of all four consumer groups: `workflow`, `notification`, `signature` and `inteligencia`. Replay and discard need `PERM_DLQ_ADMIN` at level 2.
 
 | Method | Route | Notes |
 |---|---|---|
-| `GET` | `/api/v1/{signature\|workflow\|notification}/admin/deadletter?status=pending&origin_stream=&page=&size=` | Paginated list (`X-Total-Count`). Headers only (no business payload), **narrowed by the caller's clearance inside the `WHERE`** (LIVE level of the referenced radicado; doubt = level 3): a row above the caller's level neither appears nor counts, and its detail/replay/discard answers the same `404` as an unknown `event_id`. Exact page and total, no candidate cap; the `X-Truncated` header was retired. `503` if `radicados` is missing. |
-| `GET` | `/api/v1/{signature\|workflow\|notification}/admin/deadletter/{event_id}` | Detail (full envelope + failure). Clearance-gated; **neutral `404`** — byte-identical body — when insufficient or non-existent. An authorised view writes an `evento.dead_letter.viewed` entry; **a blocked view does not audit**, so as not to confirm existence. |
-| `POST` | `/api/v1/{signature\|workflow\|notification}/admin/deadletter/{event_id}/replay` | Re-injects the event into its stream. Same clearance gate, audited. |
-| `POST` | `/api/v1/{signature\|workflow\|notification}/admin/deadletter/{event_id}/discard` | Discards it permanently, with a reason. Same gate, audited. |
+| `GET` | `/api/v1/admin/deadletter/{workflow\|notification\|signature\|inteligencia}?status=pending&origin_stream=&page=&size=` | Paginated list (`X-Total-Count`). Headers only (no business payload), **narrowed by the caller's clearance inside the `WHERE`** (LIVE level of the referenced radicado; doubt = level 3): a row above the caller's level neither appears nor counts, and its detail/replay/discard answers the same `404` as an unknown `event_id`. Exact page and total, no candidate cap; the `X-Truncated` header was retired. `503` if `radicados` is missing. |
+| `GET` | `/api/v1/admin/deadletter/{workflow\|notification\|signature\|inteligencia}/{event_id}` | Detail (full envelope + failure). Clearance-gated; **neutral `404`** — byte-identical body — when insufficient or non-existent. An authorised view writes an `evento.dead_letter.viewed` entry; **a blocked view does not audit**, so as not to confirm existence. |
+| `POST` | `/api/v1/admin/deadletter/{workflow\|notification\|signature\|inteligencia}/{event_id}/replay` | Re-runs the group's own handler in the console's transaction (notification re-sends the emails; a failed send keeps it `pending` with `502`). `inteligencia` has no replay: `409 replay_no_disponible`. Same clearance gate, audited. |
+| `POST` | `/api/v1/admin/deadletter/{workflow\|notification\|signature\|inteligencia}/{event_id}/discard` | Discards it permanently, with a reason (≥10 characters after trimming). Same gate, audited. |
 
-`evento_dead_letter` is one physical table shared by the consumers; its primary key is **`(origin_group, event_id)`**, so the same event parked by two groups leaves one row and one `evento.dead_letter` entry per group (repeating the same pair stays idempotent). In services with an event consumer `/health/ready` adds `checks.dead_letter` (`ok`/`degraded`) and a `consumer` object (`dead_letter_stream_len`, last sweep counters); it reports only and never decides the `503`.
+`evento_dead_letter` is one physical table shared by the consumers; its primary key is **`(origin_group, event_id)`**, so the same event parked by two groups leaves one row and one `evento.dead_letter` entry per group (repeating the same pair stays idempotent). In services with an event consumer `/health/ready` adds `checks.dead_letter` (`ok`/`degraded`) and a `consumer` object (`dead_letter_pendientes`, last sweep counters); it reports only and never decides the `503`.
 
 Gate: `PERM_DLQ_ADMIN` (**not** `USUA_PERM_ADMIN`) on all three.
 

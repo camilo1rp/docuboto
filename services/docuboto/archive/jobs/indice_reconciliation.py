@@ -15,7 +15,7 @@ o el sello institucional estaba ausente en ese instante) pidiendo el sello a
 firma en proceso (`signature_api.sign_as_system`, atribuido a
 `SYSTEM_RECONCILER_ID`) con backoff exponencial por índice.
 
-Espejo de `signature-service/signature/jobs/deadletter_retention.py`: mismo patrón
+Mismo patrón que las retenciones por entidad del barrido:
 per-tenant (`list_active_tenants` desde `public.tenants`), aislamiento de
 fallos por-tenant/por-índice (WARNING, no aborta el resto), `run_once()` +
 entry-point standalone `python -m app.jobs.indice_reconciliation`.

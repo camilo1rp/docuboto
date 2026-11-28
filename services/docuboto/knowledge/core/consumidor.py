@@ -160,7 +160,7 @@ async def atender(conn: Any, slug: str, envelope: dict[str, Any], cliente: Any) 
     """Aplica un sobre. Una decisión cerrada no es un fallo: el mensaje se confirma.
 
     Una excepción de transporte o de base sí sube, para que el mensaje
-    quede en la PEL y se reintente.
+    quede pendiente y se reintente.
     """
     tipo = str(envelope.get("event_type") or "")
     if tipo not in CONOCIDOS:

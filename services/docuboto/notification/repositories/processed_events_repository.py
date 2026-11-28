@@ -16,7 +16,7 @@ skips silently — intentional dedup, not data loss.
 
 The INSERT must NOT be called inside an open transaction from the caller; it executes
 its own atomic write.  BD failures propagate to the caller (not caught here), causing
-the message to remain in the PEL for retry by the reclaim sweep.
+the delivery to stay pending for retry by the reclaim sweep.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class ProcessedEventsRepository:
         BD failures (pool exhausted, connection lost, etc.) are NOT caught and
         propagate to the caller.  The caller (event_consumer handler) must let
         them propagate further so that A-1 in stream_worker leaves the message
-        in the PEL for retry by reclaim_stale.
+        pending for retry by reclaim_stale.
         """
         row = await self._conn.fetchrow(
             """

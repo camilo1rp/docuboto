@@ -299,7 +299,7 @@ sequenceDiagram
 - **Failures**: unconfirmed deliveries are reclaimed after 60 s, the last error is kept in
   `evento_ultimo_error`, and exhausted ones go to the shared `evento_dead_letter` table
   (confirmed only once that write succeeds). Admins with `PERM_DLQ_ADMIN`
-  inspect, replay, or discard them through each package's `admin_deadletter` router;
+  inspect, replay, or discard them in one console, `/api/v1/admin/deadletter/{grupo}`;
   visibility is filtered by clearance inside the SQL (`orpycamcp_common.deadletter`).
 - Consumer loops run under `spawn_supervised`, so a crashed worker restarts and readiness
   reports it.

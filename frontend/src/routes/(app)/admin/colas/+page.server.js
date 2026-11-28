@@ -13,9 +13,8 @@
  * ("workflow"), estado "pending". El selector de servicio/estado del cliente
  * refetch contra `admin/colas/api/[service]` (D-05).
  *
- * PERM_DLQ_ADMIN (NO USUA_PERM_ADMIN) es el gate real de los 3 routers
- * `admin_deadletter.py` (workflow-service, notification-service,
- * signature-service) — verificado leyendo el código, no asumido.
+ * PERM_DLQ_ADMIN (NO USUA_PERM_ADMIN) es el gate real de la consola única
+ * `docuboto/routers/admin_deadletter.py` (ADR-049 §4).
  */
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
@@ -23,10 +22,12 @@ import { API_V1 } from "$lib/utils/config.server.js";
 import { mensajeError } from "$lib/utils/apiError.js";
 
 const DEFAULT_SERVICE = "workflow";
+// Una consola para los cuatro grupos consumidores (ADR-049 §4): el grupo va en la ruta.
 const SERVICE_PATHS = {
-  workflow: "workflow/admin/deadletter",
-  notification: "notification/admin/deadletter",
-  signature: "signature/admin/deadletter",
+  workflow: "admin/deadletter/workflow",
+  notification: "admin/deadletter/notification",
+  signature: "admin/deadletter/signature",
+  inteligencia: "admin/deadletter/inteligencia",
 };
 const PAGE_SIZE = 20;
 

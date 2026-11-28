@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import logging
 
-from notification.routers import admin_deadletter, notifications, webhooks
+from notification.routers import notifications, webhooks
 
 logger = logging.getLogger(__name__)
 
 
-DOMAIN_ROUTERS = (notifications.router, webhooks.router, admin_deadletter.router)
+DOMAIN_ROUTERS = (notifications.router, webhooks.router)

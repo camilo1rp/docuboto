@@ -25,7 +25,8 @@ import pytest
 
 from tests.workflow.conftest import TENANT_HEADERS, USER_ID
 
-BASE = "/api/v1/workflow/admin/deadletter"
+#: Una ruta de workflow con el gate vetado (`require_vetted_permission`).
+RUTA = "/api/v1/workflows/overdue/scan"
 
 
 def _audit_insert_calls(mock_conn: AsyncMock) -> list:
@@ -41,7 +42,7 @@ async def test_denial_of_identified_user_is_audited(client_with_conn) -> None:
     client, mock_conn, _eventos = client_with_conn
     mock_conn.fetchval.return_value = None  # check_permission → denegado
 
-    resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    resp = await client.post(RUTA, headers=TENANT_HEADERS)
 
     assert resp.status_code == 403
     inserts = _audit_insert_calls(mock_conn)
@@ -54,7 +55,7 @@ async def test_denial_of_identified_user_is_audited(client_with_conn) -> None:
     assert args[3] == str(USER_ID)
     assert args[5] == "acceso.denegado"
     assert args[6] == "rbac"
-    assert args[7] == "PERM_DLQ_ADMIN"
+    assert args[7] == "USUA_PERM_ADMIN"
 
 
 @pytest.mark.asyncio
@@ -64,9 +65,7 @@ async def test_denial_without_identity_is_not_audited(client_with_conn) -> None:
     client, mock_conn, _eventos = client_with_conn
     mock_conn.fetchval.return_value = True  # aunque "hubiera" permiso, sin identidad no aplica
 
-    resp = await client.get(
-        f"{BASE}/", headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]}
-    )
+    resp = await client.post(RUTA, headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]})
 
     assert resp.status_code == 403
     assert _audit_insert_calls(mock_conn) == []
@@ -83,7 +82,7 @@ async def test_denial_survives_audit_failure(client_with_conn) -> None:
         "orpycamcp_common.clearance.audit.append_denial",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
-        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+        resp = await client.post(RUTA, headers=TENANT_HEADERS)
 
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"

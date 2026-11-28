@@ -25,7 +25,6 @@ import pytest
 from orpycamcp_common import events
 
 from workflow.core.constants import DLQ_GROUP
-from workflow.jobs import deadletter_retention
 from workflow.workers import document_consumer
 
 
@@ -42,8 +41,8 @@ async def test_run_delega_en_el_bus_con_lo_propio_de_workflow() -> None:
     assert kw["handler"] is document_consumer._handle
     assert kw["on_dead_letter"] is document_consumer._persist_dead_letter
     assert kw["status_name"] == "workflow"
-    assert kw["periodico"] is deadletter_retention.run_once
-    assert kw["intervalo_periodico"] == document_consumer.DLQ_RETENTION_INTERVAL
+    # La retención de sus dead-letters la hace el barrido para todos los grupos.
+    assert "periodico" not in kw
 
 
 def _campos(event_type: str, payload: dict, tenant_slug: str = "demo") -> dict:

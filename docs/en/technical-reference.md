@@ -112,7 +112,7 @@ Only `edge` is published in production, and it answers 404 on `/metrics`. knowle
 | Authorization resolved in the DB, not cached | `orpycamcp_common.rbac` (ADR-013) | A revoked permission takes effect on the next call; fail-closed |
 | Clearance with no-read-up | `rbac.nivel_efectivo` (RF-SEG-08) | Effective level = max(live level, embedded level); unknown = classified |
 | Events in the domain transaction | `eventos` / `evento_entregas` tables, `orpycamcp_common.events`, `docuboto.core.bus` (ADR-009, ADR-021, ADR-049) | An event exists if and only if its change does; at-least-once delivery |
-| Idempotent consumers + dead-letter queue | Consumer groups per service, `evento_dead_letter`, `admin_deadletter` routers | Safe retries; admins can inspect, replay or discard failed events |
+| Idempotent consumers + dead-letter queue | Consumer groups on the PostgreSQL bus, `evento_dead_letter`, one console (`/api/v1/admin/deadletter/{grupo}`) | Safe retries; admins can inspect, replay or discard failed events |
 | Hash-chained, append-only audit | `public.audit_log`, `orpycamcp_common.audit` (ADR-008) | Tamper-evident audit per tenant; DB trigger blocks UPDATE/DELETE |
 | Pluggable providers (adapter) | `SignerProvider` in signature-service | Swap signing vendors without touching business code |
 | Supervised workers | `spawn_supervised` in `orpycamcp_common.events` | A crashed consumer restarts and readiness reports it |
@@ -178,7 +178,7 @@ Installed into every image. Anything security-sensitive that more than one servi
 
 ### docuboto (the process)
 
-The composition root in `services/docuboto/docuboto/`: `main.py` (`create_app`, the one definition of middleware and handlers), `config.py` (`CommonSettings` plus one `Settings` class per domain), `core/lifespan.py` (pool, every background loop in a `BackgroundTasks` group, heavy work behind `heavy_slot()`), `core/security.py`, `routers/health.py` and `routers/metrics.py`.
+The composition root in `services/docuboto/docuboto/`: `main.py` (`create_app`, the one definition of middleware and handlers), `config.py` (`CommonSettings` plus one `Settings` class per domain), `core/lifespan.py` (pool, every background loop in a `BackgroundTasks` group, heavy work behind `heavy_slot()`), `core/security.py`, `core/bus.py` (the event-bus consumer loop), `core/dead_letter.py` (the one dead-letter repository, parking write and retention), `routers/health.py`, `routers/metrics.py` and `routers/admin_deadletter.py` (the dead-letter console for the four consumer groups).
 
 **Middleware chain, outermost first**:
 
@@ -267,7 +267,6 @@ Electronic signing: institutional XAdES seal (B/T/LT/LTA), HMAC "nativa" signatu
 | --- | --- | --- |
 | `signature.py` | `/api/v1/signature` | `POST /sign-xml` (seal), `POST /sign-personal`, `POST /verify`, `GET /firmas/{id}`; `[int]` sign index, invalidate chains |
 | `cadena.py` | `/api/v1/signature` | Signature requests, `GET /pending` inbox, `challenge`, `sign`, `vobo`, `reject`, `POST /batch` |
-| `admin_deadletter.py` | `/api/v1/signature/admin/deadletter` | List, replay, discard failed events (`PERM_DLQ_ADMIN`) |
 | `admin_sellos.py` | `/api/v1/signature/admin/sellos-archivo` | State and warnings of LTA archive timestamps |
 
 **SignerProvider contract** (`providers/base.py`), a structural protocol:
@@ -383,7 +382,6 @@ Routes radicados between dependencias: assignment, transfer, return, rollback, f
 | `workflow.py` | `/api/v1/workflows` | `POST /assign`, `POST /transfer`, `GET /inbox`, `GET /pending`; per radicado: transactions, `devolver`, `rollback`, `finalizar`, history, current step; admin `reassign/cascade`, `overdue/scan` |
 | `rules.py` | `/api/v1/workflow/rules` | Rules CRUD, `POST /evaluate`, `POST /evaluate/batch` |
 | `visto_bueno.py` | `/api/v1/workflows` | Create and decide approval chains |
-| `admin_deadletter.py` | `/api/v1/workflow/admin/deadletter` | Dead-letter list, replay, discard |
 
 **Key functions**: `WorkflowService` (1,444 lines): `assign(payload, assigned_by, sistema)`, `transfer`, `execute_transaction(radicado_id, payload, actor)`, `complete_step`, `inbox(box, dept_code, ...)`, `devolver`, `rollback`, `finalizar`, `reassign_cascade`, `scan_overdue()`. Pure functions: `rules_engine.eval_condition(cond, context)`, `matches_conditions`, `estado_radicado.derivar_estado_radicado(...)`. `distribution.auto_distribute(conn, tenant_slug, payload)` is idempotent.
 
@@ -401,7 +399,6 @@ Sends institutional email (SMTP) in response to workflow and document events and
 | --- | --- | --- |
 | `notifications.py` | `/api/v1/notifications` | `[int] POST /send`; `GET /history`, `GET /{id}` (`USUA_PERM_ADMIN`) |
 | `webhooks.py` | `/api/v1/webhooks` | Create, list, delete subscriptions; `GET /{id}/entregas` delivery log |
-| `admin_deadletter.py` | `/api/v1/notification/admin/deadletter` | Dead-letter list, replay, discard |
 
 **Key functions**: `event_consumer.process_event`, `build_workflow_notifications`, `build_document_notifications`; `notification_service.send_notification` (3 attempts with backoff); `buzones.resolver_buzon_dependencia` (ASCII mailboxes from dependencia codes); `devolucion.build_devolucion_notifications` (postal returns); `webhook_service.dispatch(envelope)`, `sign` (HMAC-SHA256), `recortar_si_clasificado`; `webhook_security.validate_webhook_target` (SSRF); `webhook_secrets.encrypt_secret` (AES-256-GCM, versioned KEK).
 

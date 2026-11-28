@@ -15,18 +15,19 @@
  *
  * Irreversible en el dominio: tras el descarte el evento pasa a `discarded`
  * y el mensaje original NUNCA se reprocesará. El backend exige un motivo de
- * al menos 10 caracteres tras recorte (notification-service; workflow/
- * signature exigen 1) — aquí se exige 10 de forma uniforme en las tres colas
- * para no depender de cuál service está seleccionado.
+ * al menos 10 caracteres tras recorte, igual para los cuatro grupos; aquí se
+ * comprueba lo mismo antes de llamar.
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
+// Una consola para los cuatro grupos consumidores (ADR-049 §4): el grupo va en la ruta.
 const SERVICE_PATHS = {
-  workflow: "workflow/admin/deadletter",
-  notification: "notification/admin/deadletter",
-  signature: "signature/admin/deadletter",
+  workflow: "admin/deadletter/workflow",
+  notification: "admin/deadletter/notification",
+  signature: "admin/deadletter/signature",
+  inteligencia: "admin/deadletter/inteligencia",
 };
 
 /** @type {import('./$types').RequestHandler} */

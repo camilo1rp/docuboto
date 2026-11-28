@@ -85,10 +85,12 @@ def _on_conflict_de_la_dlq(texto: str) -> list[str]:
     return hallazgos
 
 
+_REPOSITORIO = SERVICIOS / "docuboto" / "docuboto" / "core" / "dead_letter.py"
+
+
 def test_todo_on_conflict_de_la_dlq_incluye_el_grupo() -> None:
-    repos = _fuentes("*/app/repositories/dead_letter_repository.py")
-    assert len(repos) >= 3, "deben ser los 3 consumidores: workflow, signature, notification"
-    for repo in repos:
+    """Un solo repositorio para los cuatro grupos (ADR-049 §4)."""
+    for repo in (_REPOSITORIO,):
         cl = _on_conflict_de_la_dlq(repo.read_text())
         assert cl, f"{repo}: no se halló el INSERT con ON CONFLICT"
         for c in cl:
@@ -191,8 +193,8 @@ def test_el_nombre_supervisado_coincide_en_worker_lifespan_y_health(servicio: st
     assert "health_common.consumer_report(" in health
 
 
-def test_los_cuatro_repositorios_no_vuelven_a_conflictuar_solo_por_event_id() -> None:
-    """Anti-vacuidad del censo ON CONFLICT: ninguna sentencia de la DLQ (ni siquiera fuera del
-    INSERT principal) puede apoyarse solo en event_id."""
-    for repo in _fuentes("*/app/repositories/dead_letter_repository.py"):
-        assert not re.search(r"ON CONFLICT\s*\(\s*event_id\s*\)", repo.read_text()), repo
+def test_ninguna_sentencia_de_la_dlq_conflictua_solo_por_event_id() -> None:
+    """Ninguna sentencia de la DLQ (ni siquiera fuera del INSERT principal) puede
+    apoyarse solo en event_id, en el repositorio ni en ningún worker."""
+    for fuente in (_REPOSITORIO, *_fuentes("*/app/workers/*.py")):
+        assert not re.search(r"ON CONFLICT\s*\(\s*event_id\s*\)", fuente.read_text()), fuente

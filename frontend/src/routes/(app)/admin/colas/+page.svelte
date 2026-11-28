@@ -10,14 +10,14 @@
 -->
 
 <!--
-  /admin/colas — Colas de errores (dead-letter, ADR-021 Fase 5): tres
-  servicios independientes (workflow, notification, signature) exponen la
-  misma forma de API bajo `admin_deadletter.py`. Selector de servicio +
+  /admin/colas — Colas de errores (dead-letter, ADR-021 Fase 5): una consola
+  para los cuatro grupos consumidores (workflow, notification, signature,
+  inteligencia) en `/api/v1/admin/deadletter/{grupo}` (ADR-049 §4). Selector de grupo +
   filtro de estado (pending/resolved/discarded) + listado con detalle,
   reintento y descarte.
 
-  Gate REAL: `PERM_DLQ_ADMIN` — DISTINTO de `USUA_PERM_ADMIN` (verificado
-  leyendo los 3 routers de backend). El catálogo de `admin/+page.svelte`
+  Gate REAL: `PERM_DLQ_ADMIN` — DISTINTO de `USUA_PERM_ADMIN`; reintentar y
+  descartar piden además nivel 2. El catálogo de `admin/+page.svelte`
   todavía declara esta tarjeta con `permission: "USUA_PERM_ADMIN"` — repórtese
   al equipo que la coordina para corregirlo (fuera de alcance de este agente).
 
@@ -54,6 +54,7 @@
     { value: "workflow", label: "Flujos (workflow)" },
     { value: "notification", label: "Notificaciones" },
     { value: "signature", label: "Firma" },
+    { value: "inteligencia", label: "Inteligencia (solo descartar)" },
   ];
   const STATUSES = [
     { value: "pending", label: "Pendientes" },
@@ -254,7 +255,8 @@
     <h1 class="colas-page__title">Colas de errores</h1>
     <p class="colas-page__subtitle">
       Eventos que fallaron su procesamiento automático (dead-letter, ADR-021) en workflow,
-      notificaciones o firma. Reintentar reprocesa el evento; descartar lo cierra permanentemente.
+      notificaciones, firma o inteligencia. Reintentar reprocesa el evento; descartar lo cierra
+      permanentemente.
     </p>
   </header>
 

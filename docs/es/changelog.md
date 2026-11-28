@@ -18,6 +18,16 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Changed
 
+- `refactor(docuboto,workflow,signature,notification,knowledge,frontend,shared)!`: **ADR-049 §4 — una implementación y una consola para el dead-letter.**
+  *Por qué*: el repositorio, la retención, la consola y la escritura del aparcamiento estaban copiados en workflow, signature y notification (y una cuarta escritura en la pasarela de inteligencia), con el mismo código y otro nombre de servicio; inteligencia no tenía consola y sus eventos aparcados no se veían.
+  *Qué cambia*:
+  - **Un módulo.** `docuboto/core/dead_letter.py`: el repositorio, `persistir` (el `on_dead_letter` de los cuatro consumidores, vía `functools.partial`) y `purgar_terminales`. Un sobre sin entidad válida se asienta bajo SYSTEM_TENANT en los cuatro grupos (signature antes solo lo registraba en el log).
+  - **Una consola.** `docuboto/routers/admin_deadletter.py`: `/api/v1/admin/deadletter/{grupo}` con `grupo` en `workflow`, `notification`, `signature` o `inteligencia`. Listar, ver y descartar son comunes; reprocesar despacha a `replay` de cada dominio en la transacción de la consola. Inteligencia no tiene reproceso: se ve y se descarta (`409 replay_no_disponible`). Reprocesar y descartar piden `PERM_DLQ_ADMIN` con nivel 2; el motivo de descarte exige 10 caracteres en los cuatro grupos.
+  - **Una retención.** El barrido purga por entidad los dead-letters resueltos o descartados con `DEADLETTER_RETENCION_DIAS` (90), para todos los grupos. Salen los tres `retention_deadletter_days` y la retención de los bucles de workflow y signature.
+  - **Métrica.** `orpycamcp_dlq_pending_events` cuenta también a `intelligence-gateway`.
+  - **Frontend.** `/admin/colas` llama a la ruta nueva y añade el grupo Inteligencia.
+  *Impacto*: `!` por cambio de rutas (`/api/v1/{workflow,signature,notification}/admin/deadletter` → `/api/v1/admin/deadletter/{grupo}`) y de ajustes; sin cambios de esquema.
+
 - `refactor(docuboto,shared,infra,ci,scripts)!`: **ADR-049 — los eventos y las colas viven en PostgreSQL: fuera Redis.**
   *Por qué*: en el proceso único Redis solo sostenía el bus de eventos, el antirreplay de ALTCHA y una sonda; era un contenedor más que respaldar y vigilar, su contenido no entraba en el `pg_dump`, y publicar tras el commit hacía falta un outbox con relé para no perder eventos (y workflow y signature ni siquiera lo usaban).
   *Qué cambia*:
@@ -27,7 +37,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
   - **ALTCHA (§2).** El antirreplay pasa a `altcha_usados` (`tenant/290`), en la conexión de la petición; `antirrobots_disponible` solo dice si hay clave HMAC.
   - **Salud.** `/health/ready` decide el 503 solo con la base; cada consumidor (ahora también `intelligence-gateway`) informa `dead_letter_pendientes` desde `evento_dead_letter`.
   - **Se retiran** el contenedor `redis` y su volumen (dev y prod), `REDIS_URL`/`REDIS_PASSWORD`, la dependencia `redis` (y `async-timeout`), los cinco `*/core/redis_client.py`, `get_redis`, el servicio Redis de la CI y lo suyo en `ci-local.sh`, `test-app.sh`, `init-tenant.sh` y `preflight-prod.sh`.
-  *Desviaciones*: no hay cursor por `seq` (una tx que confirma tarde con un `seq` menor quedaría saltada); las tablas viven en el schema de la entidad; la consolidación de las tres copias del dead-letter va en un PR aparte.
+  *Desviaciones*: no hay cursor por `seq` (una tx que confirma tarde con un `seq` menor quedaría saltada); las tablas viven en el schema de la entidad; la consolidación del dead-letter llegó en el PR siguiente (entrada de arriba).
   *Pruebas*: `tests/document/integration/test_bus_eventos_integration.py` (rollback = sin evento, un evento por grupo, el commit tardío con `seq` menor se entrega, quinta entrega al dead-letter con su error, sin rastro durable no se confirma, la purga respeta lo pendiente); `shared/tests/test_sin_redis.py` (el nombre no vuelve, por palabra completa); las pruebas de publicadores y consumidores pasan a grabar los eventos y a comprobar el cableado con `bus.consumir`.
   *Impacto*: `!` por retirada de un contenedor, variables y ajustes, y migraciones editadas en sitio (`tenant/280`, `tenant/290`); no hay instalaciones con datos: correr `scripts/reset-entorno.sh`. Quedan tres contenedores además de `frontend` y el almacén de objetos hasta ADR-050.
 

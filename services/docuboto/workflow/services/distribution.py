@@ -114,7 +114,7 @@ async def auto_distribute(
     # radicador) en vez de dejar que la excepción se propague — un 422 fail-
     # closed tiene sentido en la escritura HTTP directa (hay un cliente al que
     # devolvérselo), pero aquí el "cliente" es el worker de eventos: propagar
-    # dejaría el mensaje en la PEL, reintentando contra un dato permanentemente
+    # dejaría el evento pendiente, reintentando contra un dato permanentemente
     # inválido (no un fallo transitorio) hasta terminar en dead-letter en cada
     # reintento — ruido de DLQ garantizado por una regla mal configurada, no una
     # falla real del sistema. Se registra en logs para que quien administra las
