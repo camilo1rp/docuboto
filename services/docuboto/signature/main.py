@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 
-from signature.routers.admin_deadletter import router as admin_dlq_router
 from signature.routers.admin_sellos import router as admin_sellos_router
 from signature.routers.cadena import router as cadena_router
 from signature.routers.public import router as public_router
@@ -23,7 +22,6 @@ logger = logging.getLogger("signature.startup")
 DOMAIN_ROUTERS = (
     signature_router,
     cadena_router,
-    admin_dlq_router,
     admin_sellos_router,
     public_router,
 )

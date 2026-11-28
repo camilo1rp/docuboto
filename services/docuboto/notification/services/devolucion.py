@@ -101,7 +101,7 @@ async def resolver_contexto_devolucion(
     """Datos del aviso, o `None` si no hay a quién avisar (envío o radicado inexistentes).
 
     Un error de base de datos SE PROPAGA: el consumidor lo llama antes de reclamar el
-    evento, así que sin ack vuelve al PEL y, agotadas las entregas, termina en la DLQ.
+    evento, así que sin confirmar queda pendiente y, agotadas las entregas, termina en la DLQ.
     """
     try:
         sid = shipment_id if isinstance(shipment_id, uuid.UUID) else uuid.UUID(str(shipment_id))

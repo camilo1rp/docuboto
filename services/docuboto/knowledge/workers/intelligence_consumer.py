@@ -20,8 +20,8 @@ declaración firmada y reconcilia el libro y una página del inventario.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+from functools import partial
 from typing import Any
 
 from orpycamcp_common import events
@@ -29,20 +29,12 @@ from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.tenant import slug_valido
 
 from docuboto.config import knowledge as settings
-from docuboto.core import bus
+from docuboto.core import bus, dead_letter
 from knowledge.core import paso
 from knowledge.core.conexion import asegurar
 from knowledge.core.consumidor import CONOCIDOS, atender, cargar_pagina
 from knowledge.core.reconciliacion import reconciliar
 from knowledge.core.salida_http import TransporteHttp
-
-try:
-    from orpycamcp_common import audit as _audit
-
-    _AUDIT = True
-except ImportError:  # pragma: no cover
-    _audit = None  # type: ignore[assignment]
-    _AUDIT = False
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +51,6 @@ SELECT slug
  WHERE asistente_habilitado
    AND intelligence_provider = 'ppi'
 """
-_LIBRO_MUERTO = """
-INSERT INTO evento_dead_letter
-    (event_id, event_type, correlation_id, tenant_slug,
-     payload, failure, origin_stream, origin_group, dead_lettered_at)
-VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, now())
-ON CONFLICT (origin_group, event_id) DO NOTHING
-RETURNING event_id
-"""
-
-
 async def _handle(data: dict[str, Any], cliente: Any) -> None:
     envelope = events.parse_fields(data)
     if str(envelope.get("event_type") or "") not in CONOCIDOS:
@@ -119,58 +101,8 @@ async def _reconciliar(cliente: Any) -> None:
             logger.warning("la reconciliación de %s no avanzó", slug, exc_info=True)
 
 
-async def _persist_dead_letter(envelope: dict[str, Any], failure_meta: dict[str, Any]) -> None:
-    """Deja el poison pill en ``evento_dead_letter`` antes de confirmar la entrega.
-
-    Sin tenant no hay schema donde escribirlo. Se anota en la auditoría
-    pública y se confirma, para no reintentar un sobre que nunca va a
-    poder guardarse.
-    """
-    slug = envelope.get("tenant_slug") or ""
-    event_id = envelope.get("event_id") or ""
-    if not slug_valido(slug):
-        if _AUDIT:
-            async with get_pool().acquire() as conn:
-                await _audit.append(
-                    conn,
-                    tenant_slug=None,
-                    service=_SERVICE,
-                    action="evento.dead_letter",
-                    object_type="evento",
-                    object_ref=event_id,
-                    actor="system",
-                    canal="system",
-                    payload={"failure": failure_meta, "envelope": envelope},
-                )
-        return
-
-    payload = json.dumps(envelope, default=str)
-    failure = json.dumps(failure_meta, default=str)
-    async with acquire_tenant(slug) as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                _LIBRO_MUERTO,
-                event_id,
-                envelope.get("event_type"),
-                envelope.get("correlation_id"),
-                slug,
-                payload,
-                failure,
-                failure_meta.get("dead_letter_origin_stream"),
-                failure_meta.get("dead_letter_group") or GROUP,
-            )
-            if row is not None and _AUDIT:
-                await _audit.append(
-                    conn,
-                    tenant_slug=slug,
-                    service=_SERVICE,
-                    action="evento.dead_letter",
-                    object_type="evento",
-                    object_ref=event_id,
-                    actor="system",
-                    canal="system",
-                    payload={"failure": failure_meta, "envelope": envelope},
-                )
+#: El `on_dead_letter` del bus: la escritura única del aparcamiento (ADR-049 §4).
+_persist_dead_letter = partial(dead_letter.persistir, group=GROUP, service=_SERVICE)
 
 
 async def _periodico(cliente: Any) -> None:

@@ -24,6 +24,7 @@ from auth.core.medidor import _FAMILIAS as _FAMILIAS_AUDIT
 from auth.core.medidor import medir_audit_chain
 from knowledge.core.medidor import FAMILIAS as _FAMILIAS_INTELIGENCIA
 from knowledge.core.medidor import medir as medir_inteligencia
+from knowledge.workers.intelligence_consumer import GROUP as _DLQ_INTELIGENCIA
 from notification.core.constants import DLQ_GROUP as _DLQ_NOTIFICATION
 from signature.core.constants import DLQ_GROUP as _DLQ_SIGNATURE
 from workflow.core.constants import DLQ_GROUP as _DLQ_WORKFLOW
@@ -34,7 +35,7 @@ router = APIRouter(tags=["metrics"])
 async def _medir_worm(conn) -> list[metricas.Muestra]:
     return await contar_agotados(conn, await metricas.esquemas_a_medir(conn))
 
-_GRUPOS_DLQ = (_DLQ_WORKFLOW, _DLQ_NOTIFICATION, _DLQ_SIGNATURE)
+_GRUPOS_DLQ = (_DLQ_WORKFLOW, _DLQ_NOTIFICATION, _DLQ_SIGNATURE, _DLQ_INTELIGENCIA)
 
 
 async def _medir_dlq(conn) -> list[metricas.Muestra]:

@@ -19,7 +19,6 @@ Responsibilities:
 
 import logging
 
-from workflow.routers.admin_deadletter import router as admin_dlq_router
 from workflow.routers.rules import router as rules_router
 from workflow.routers.visto_bueno import router as visto_bueno_router
 from workflow.routers.workflow import router as workflow_router
@@ -27,6 +26,6 @@ from workflow.routers.workflow import router as workflow_router
 logger = logging.getLogger(__name__)
 
 
-DOMAIN_ROUTERS = (workflow_router, rules_router, visto_bueno_router, admin_dlq_router)
+DOMAIN_ROUTERS = (workflow_router, rules_router, visto_bueno_router)
 
 

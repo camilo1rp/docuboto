@@ -30,6 +30,7 @@ from auth.main import DOMAIN_ROUTERS as AUTH_ROUTERS
 from docuboto import config as settings
 from docuboto.core.lifespan import lifespan
 from docuboto.core.security import SecurityHeadersMiddleware, UserRateLimitMiddleware
+from docuboto.routers.admin_deadletter import router as deadletter_router
 from docuboto.routers.health import router as health_router
 from docuboto.routers.metrics import router as metrics_router
 from document.main import DOMAIN_ROUTERS as DOCUMENT_ROUTERS
@@ -58,6 +59,8 @@ ALL_ROUTERS: tuple[APIRouter, ...] = (
     *NOTIFICATION_ROUTERS,
     *SIGNATURE_ROUTERS,
     *KNOWLEDGE_ROUTERS,
+    # La consola del dead-letter es de los cuatro grupos consumidores (ADR-049 §4).
+    deadletter_router,
 )
 
 

@@ -18,7 +18,8 @@ Una pasada por TODOS los tenants activos que, por cada uno:
    procesamiento entre réplicas, y cada ítem es idempotente (sin doble numeración);
 3. retira los lotes completados sin errores más antiguos que la retención;
 4. purga los eventos del bus ya confirmados y más viejos que su retención
-   (`events.purgar`, ADR-049);
+   (`events.purgar`, ADR-049) y los dead-letters ya resueltos o descartados
+   (`dead_letter.purgar_terminales`, ADR-049 §4);
 5. aplica los callbacks postales que llegaron con la entidad suspendida.
 
 Un fallo en un tenant (o en una fase) se registra y no frena a los demás; la
@@ -41,6 +42,7 @@ from orpycamcp_common.request_log import canal_de_fondo
 from pydantic import ValidationError
 
 from docuboto.config import document as settings
+from docuboto.core import dead_letter
 from document.repositories.postal_repository import PostalRepository
 from document.schemas.postal import PostalCallbackPayload
 from document.services.batch_service import BatchService
@@ -202,6 +204,7 @@ async def barrer_tenant(slug: str) -> dict[str, int]:
         "lotes_reanudados": 0,
         "lotes_retirados": 0,
         "eventos_purgados": 0,
+        "dead_letters_purgados": 0,
         "callbacks_diferidos": 0,
     }
     async with acquire_tenant(slug) as conn:
@@ -247,6 +250,14 @@ async def barrer_tenant(slug: str) -> dict[str, int]:
             raise
         except Exception:
             logger.exception("barrido: purga de eventos falló en tenant=%s", slug)
+        try:
+            resumen["dead_letters_purgados"] = await dead_letter.purgar_terminales(
+                conn, slug, dias=settings.deadletter_retencion_dias
+            )
+        except asyncpg.UndefinedTableError:
+            raise
+        except Exception:
+            logger.exception("barrido: purga de dead-letters falló en tenant=%s", slug)
         # 5. callbacks postales recibidos con la entidad suspendida (B10, ADR-035 §7).
         #    Este barrido solo recorre tenants ACTIVOS: reactivarla dispara el drenaje.
         try:

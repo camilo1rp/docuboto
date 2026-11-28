@@ -77,7 +77,7 @@ def buzon_de_codigo_o_ventanilla(codigo: int | str | None) -> str:
 
     Variante tolerante para el camino de radicación, que recibe el código en el
     sobre del evento y no puede permitirse una excepción: reventar aquí deja el
-    mensaje en el PEL del stream y bloquea la entrega de TODO lo que venga
+    evento pendiente y bloquea la entrega de TODO lo que venga
     detrás. Un aviso mal encaminado es un incidente; un consumidor parado es
     una avería.
     """

@@ -13,10 +13,10 @@ Both handlers implement the insert-then-send idempotency pattern (ADR-021 Fase 3
 
   1. Parse the canonical envelope.
   2. Resolve event_id + tenant_slug; raise ValueError if either is absent — the
-     message stays in the PEL and the reclaim sweep routes it to dead-letter
-     (R1 in _persist_dead_letter handles the no-tenant_slug case).
+     delivery stays pending and the reclaim sweep routes it to dead-letter
+     (`dead_letter.persistir` handles the no-tenant_slug case).
   3. Claim event_id in ``notification_processed_events`` via an atomic INSERT.
-     • BD failure propagates (not caught) → A-1 no-ack → PEL → reclaim sweep.
+     • BD failure propagates (not caught) → A-1 no-ack → pending → reclaim sweep.
   4. If already claimed (ON CONFLICT) → return silently (dedup skip, not loss).
   5. Only after a successful claim: dispatch webhooks (E11) + send notification(s)
      built from the envelope by the pure builders below.
@@ -28,15 +28,15 @@ and the radicado in document-service are the authoritative sources.
 External effects after the claim (webhooks, email) are best-effort: any failure
 is already handled by their own retry mechanisms.  They must NOT raise exceptions
 that would propagate to stream_worker and trigger a no-ack for an event that has
-already been claimed — that would cause infinite PEL churn (the dedup would block
+already been claimed — that would cause infinite redelivery churn (the dedup would block
 reprocessing anyway).
 
 Consequence for the dead-letter admin replay (ADR-021 Fase 5 Inc.2): because
 dispatch_webhooks and send_notification never raise, a message that made it past
 the claim step (3) essentially never fails afterwards — so in practice almost
 every dead-lettered notification event never reached the claim at all (the claim
-itself raised, e.g. a transient DB error, and the message stayed in the PEL until
-max_deliveries). The DLQ replay endpoint (notification/routers/admin_deadletter.py) still
+itself raised, e.g. a transient DB error, and the delivery stayed pending until
+max_deliveries). The DLQ replay (notification/services/replay.py) still
 clears any stale claim defensively via ProcessedEventsRepository.delete_one before
 resending, in case this invariant changes in the future.
 
@@ -194,7 +194,7 @@ async def process_event(data: dict[str, str]) -> None:
     tenant_slug: str | None = envelope.get("tenant_slug")
 
     # Events without event_id or tenant_slug cannot be deduplicated safely:
-    # raise so the message stays in the PEL → reclaim_stale → R1 in
+    # raise so the delivery stays pending → reclaim_stale → R1 in
     # _persist_dead_letter handles the no-tenant_slug case under SYSTEM_TENANT.
     if not event_id or not tenant_slug:
         raise ValueError(
@@ -203,7 +203,7 @@ async def process_event(data: dict[str, str]) -> None:
         )
 
     # Claim the event_id before any external effect (insert-then-send).
-    # BD failures propagate → A-1 no-ack → the message stays in the PEL.
+    # BD failures propagate → A-1 no-ack → the delivery stays pending.
     async with acquire_tenant(tenant_slug) as conn:
         claimed = await ProcessedEventsRepository(conn).claim(event_id)
 
@@ -233,7 +233,7 @@ async def construir_envios_documento(
     """ÚNICO núcleo que convierte un evento del stream de documentos en sus correos.
 
     Lo llaman el consumidor vivo (``process_document_event``) y el reproceso de la DLQ
-    (``admin_deadletter._construir_envios``): así los dos caminos no pueden divergir en a
+    (``notification.services.replay._construir_envios``): así los dos caminos no pueden divergir en a
     quién se avisa ni con qué contenido (mismo patrón que ``apply_reclassification`` en
     signature-service).
 
@@ -289,7 +289,7 @@ async def process_document_event(data: dict[str, str]) -> None:
     event_type = envelope.get("event_type")
 
     # ``envio.devuelto``: el contexto se resuelve ANTES del claim. Si la base falla al
-    # resolverlo, el evento aún no está reclamado: sin ack vuelve al PEL y, agotadas las
+    # resolverlo, el evento aún no está reclamado: sin confirmar queda pendiente y, agotadas las
     # entregas, ``reclaim_stale`` lo manda a la DLQ. Resolverlo después lo perdería sin
     # pasar por ella (el trade-off de la cabecera de este módulo). Para los demás tipos
     # el orden no cambia.

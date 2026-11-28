@@ -46,7 +46,7 @@ async def resolver_huella_vigente(borrador_id: str, tenant_slug: str) -> str | N
     """Huella vigente del texto, preguntada a document-service AHORA.
 
     ``None`` = el borrador ya no existe. ``HuellaNoVerificableError`` se propaga:
-    sin ack el mensaje vuelve al PEL y, tras los reintentos, a la DLQ; tragárselo
+    sin confirmar el evento queda pendiente y, tras los reintentos, a la DLQ; tragárselo
     daría por «sin cambios» algo que simplemente no se pudo comprobar.
     """
     try:
