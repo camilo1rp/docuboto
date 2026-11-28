@@ -184,15 +184,19 @@ async def test_vencido_deja_fuera_al_que_vence_hoy(tenant_ctx) -> None:
     """
     slug, conn = await _en_tenant(tenant_ctx)
     unidad = await _unidad(conn)
-    await _prestamo(conn, unidad, vence=date.today())
-    await _prestamo(conn, unidad, vence=date.today() - timedelta(days=1))
+    # «Hoy» es el `CURRENT_DATE` de PostgreSQL —el reloj con el que filtra el
+    # repositorio—, no `date.today()` del host: si sus zonas difieren (host en
+    # Bogotá, servidor en UTC) el préstamo «de hoy» salía ya vencido tras las 19:00.
+    hoy: date = await conn.fetchval("SELECT CURRENT_DATE")
+    await _prestamo(conn, unidad, vence=hoy)
+    await _prestamo(conn, unidad, vence=hoy - timedelta(days=1))
 
     items, total = await FisicoRepository(conn, slug).list_prestamos(
         estado="vencido", unidad_id=None, page=1, size=50
     )
 
     assert total == 1
-    assert items[0]["fecha_devolucion_esperada"] == date.today() - timedelta(days=1)
+    assert items[0]["fecha_devolucion_esperada"] == hoy - timedelta(days=1)
 
 
 @pytest.mark.asyncio
