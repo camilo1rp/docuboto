@@ -31,9 +31,9 @@ hardware figure in the documentation: any other is a mistake.
 
 A guard (`shared/tests/test_hardware_figure.py`) adds up the `deploy.resources.limits`
 of the default profile in `infra/docker-compose.prod.yml` and fails if they exceed
-this figure. **Today they do** (no gateway or worker since ADR-047 and no Keycloak since ADR-048,
-but Redis and the object store are still there): the figure is the redesign's target (ADR-049,
-ADR-050), and the guard is marked as a strict expected failure until the
+this figure. **Today they do** (no gateway or worker since ADR-047, no Keycloak since ADR-048 and
+no Redis since ADR-049, but the object store is still there): the figure is the redesign's target
+(ADR-050), and the guard is marked as a strict expected failure until the
 manifest fits. When it fits, the mark comes off.
 
 ### Software
@@ -70,7 +70,7 @@ sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-
 sudo chmod +x /usr/local/bin/docker-compose
 
 # Create the data directory (outside the source tree)
-sudo mkdir -p /srv/orpyca/{postgres,minio,redis,certs}
+sudo mkdir -p /srv/orpyca/{postgres,minio,certs}
 sudo chown $USER:$USER /srv/orpyca -R
 ```
 
@@ -149,7 +149,7 @@ What each domain publishes:
 | `API_PUBLIC_HOSTNAME` | `app:8000` | `/metrics` answers 404; `/health/ready` only from the `edge` container itself (`127.0.0.1`); probe it with `docker exec <edge> wget --no-check-certificate -qO- --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready`. The network gateway's IP (`172.20.0.1`) is **not** allowed: it is what nginx sees for any internet client |
 
 **Rate limiting (ADR-047).** The per-IP bucket lives in `edge` (nginx `limit_req`, in memory, no
-Redis), with the budgets the retired api-gateway had:
+external store), with the budgets the retired api-gateway had:
 
 | Zone | What it covers | Limit per IP |
 |---|---|---|
@@ -212,7 +212,6 @@ cp infra/.env.example .env
 
 # 2. Generate strong passwords
 openssl rand -base64 32  # PostgreSQL password
-openssl rand -base64 32  # Redis password
 openssl rand -base64 32  # object-store password
 openssl rand -base64 32  # IDENTITY_KEY_ENCRYPTION_KEY
 
@@ -227,7 +226,6 @@ nano .env
 | `INTELLIGENCE_CREDENTIAL_KEK` | KEK (base64 of 32 bytes) that seals the intelligence pseudonym and return keys. **`init_tenant.py` will not create an entity without it**, with or without the intelligence overlay (ADR-053 §5) | `<openssl rand -base64 32>` |
 | `DB_USER` | PostgreSQL user | `orpycamcp_prod` |
 | `DB_PASSWORD` | PostgreSQL password (32+ characters) | `<openssl rand -base64 32>` |
-| `REDIS_PASSWORD` | Redis password (32+ characters) | `<openssl rand -base64 32>` |
 | `MINIO_ROOT_PASSWORD` | Object-store root password (the `MINIO_` prefix is historical, ADR-027) | `<openssl rand -base64 32>` |
 | `IDENTITY_KEY_ENCRYPTION_KEY` | KEK (base64 of 32 bytes) that seals the private keys the app signs its JWTs with (ADR-048). **The app won't start without it**; losing it forces a signing-key rotation and ends every session | `<openssl rand -base64 32>` |
 | `FRONTEND_HOSTNAME` | Public FQDN of the SSR frontend (defines `ORIGIN`) | `app.yourdomain.com` |
@@ -269,7 +267,7 @@ serve without `SIGNATURE_SECRET`,
 `.env.example` untouched. The error message names the variable, never the value
 received.
 
-**`ALTCHA_HMAC_KEY` (C16, ADR-038) is required**: a key (≥ 32 bytes; `openssl rand -hex 32`) with which the app signs the anti-bot challenges of the anonymous public window. The production manifest demands it (`${ALTCHA_HMAC_KEY:?}`) and the app **does not start** without it or with fewer than 32 bytes. It never reaches the browser; rotating it only invalidates live challenges (≤ `ALTCHA_TTL_SEGUNDOS`, default 300). `ALTCHA_MAXNUMBER` (100000) caps the client's cost. If Redis goes down, the window answers `503 antirrobots_no_disponible` (fail-closed: without Redis the single use of a challenge cannot be guaranteed).
+**`ALTCHA_HMAC_KEY` (C16, ADR-038) is required**: a key (≥ 32 bytes; `openssl rand -hex 32`) with which the app signs the anti-bot challenges of the anonymous public window. The production manifest demands it (`${ALTCHA_HMAC_KEY:?}`) and the app **does not start** without it or with fewer than 32 bytes. It never reaches the browser; rotating it only invalidates live challenges (≤ `ALTCHA_TTL_SEGUNDOS`, default 300). `ALTCHA_MAXNUMBER` (100000) caps the client's cost. Each challenge is consumed once in the entity's `altcha_usados` table (ADR-049): reusing it returns `409 antirrobots_usado`, and if the consumption can't be recorded the window answers `503 antirrobots_no_disponible` (fail-closed: without that row single use can't be guaranteed).
 
 If you use email ingestion (E19), `EMAIL_ENCRYPTION_KEY` is required: mailbox
 credentials are encrypted at rest with it. There are no `IMAP_*` variables any
@@ -438,7 +436,6 @@ JRE, veraPDF and Ghostscript for PDF/A validation. There is no `api-gateway`, no
 |---|---|---|
 | `migrate-docuboto` | yes, one-shot (`app` image) | yes, one-shot |
 | `postgres` | yes | yes (`127.0.0.1:15432`) |
-| `redis` | yes | yes (`127.0.0.1:16379`) |
 | `minio` (RustFS) | yes | yes (`19900`) |
 | `app` | yes | yes (`127.0.0.1:19000`) |
 | `frontend` | yes | yes (`19300`) |
@@ -446,8 +443,8 @@ JRE, veraPDF and Ghostscript for PDF/A validation. There is no `api-gateway`, no
 | `mailpit` | no | optional (own profile) |
 
 **ADR-047's target —four containers: `app`, `postgres`, `edge`, `frontend`— isn't reached yet.**
-Keycloak is gone (ADR-048); Redis and the object store stay in the manifest until ADR-049 (events in
-PostgreSQL) and ADR-050 (bytes on disk) retire them.
+Keycloak left with ADR-048 and Redis with ADR-049 (events live in PostgreSQL); the object store stays
+in the manifest until ADR-050 (bytes on disk) retires it.
 
 ### Using docker-compose.prod.yml
 
@@ -511,8 +508,9 @@ curl -k https://api.yourdomain.com/.well-known/openid-configuration
 # (ADR-027) and MinIO pulled its client from the registries too. Use `aws-cli`.
 docker compose exec minio curl -fsS http://localhost:9000/health
 
-# Verify Redis is running
-docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
+# Check that the bus consumers aren't piling up unconfirmed deliveries
+docker compose exec postgres psql -U "$DB_USER" -d "$DB_NAME" \
+  -c "SELECT group_name, count(*) FROM tenant_<entity>.evento_entregas WHERE confirmado_en IS NULL GROUP BY 1"
 ```
 
 #### The two probes: `/health` and `/health/ready`
@@ -522,7 +520,7 @@ The app exposes **two** routes, and they are not interchangeable:
 | Route | Question | Checks | Consumed by |
 |---|---|---|---|
 | `/health` | Is the process answering? | Nothing | The container `healthcheck` |
-| `/health/ready` | Can it serve traffic **right now**? | Decides on database and Redis; reports, without deciding, the object store, SMTP, next month's `audit_log` partition and each event consumer with its DLQ | The load balancer / reverse proxy |
+| `/health/ready` | Can it serve traffic **right now**? | Decides on the database only (events live there too, ADR-049); reports, without deciding, the object store, SMTP, next month's `audit_log` partition and each event consumer with its pending dead-letters | The load balancer / reverse proxy |
 
 `/health` **depends on nothing, deliberately**. Restarting the app because
 Postgres is down does not fix Postgres: it discards in-flight work and adds a
@@ -572,7 +570,7 @@ Identity is resolved **once per request**: `UsuarioActualMiddleware` validates t
 in `request.state` and strips the identity headers the client sends (`X-User-Id`, `X-Username`,
 `X-User-Roles`, `X-Canal`, `X-Tenant-Slug`; it resets the last one from the token's slug). With no
 network hops between domains there is no header to sign: ADR-047 retired the nonce-signed identity
-(`IDENTITY_SIGNING_SECRET`, `X-Identity-Nonce`), and with it Redis as a hard dependency of every
+(`IDENTITY_SIGNING_SECRET`, `X-Identity-Nonce`), and with it an external store as a hard dependency of every
 authenticated request.
 
 The `search_path` of every tenant connection is **only** the `tenant_{slug}` schema. The extensions
@@ -1042,7 +1040,7 @@ Configure alerts for:
 
 > What can be verified in the repository **already has a guard** that runs on every push
 > (`shared/tests/test_manifiesto_prod_seguro.py`): the production manifest publishes no
-> `ports:` except `edge` (80 and 443), Redis carries `--requirepass ${REDIS_PASSWORD:?}`, every
+> `ports:` except `edge` (80 and 443), every
 > credential is mandatory (`${VAR:?}`) and has no default, and third-party images carry **a tag and a
 > digest** (`@sha256:`; a tag can be moved in the registry, a digest cannot). `TRUSTED_PROXIES` excludes
 > the network's gateway, the nginx template covers the two domains and `infra/.env.example` holds every
@@ -1055,7 +1053,6 @@ Configure alerts for:
 - [ ] All services have TLS enabled (`scripts/preflight-prod.sh`)
 - [ ] PostgreSQL is not externally accessible (manifest: guard; host: `preflight-prod.sh`)
 - [ ] The object store requires authentication (no public access)
-- [ ] Redis requires a password (manifest: guard)
 - [ ] Both domains have a valid certificate and `edge` serves them; `IDENTITY_KEY_ENCRYPTION_KEY` is unique to the installation
 - [ ] Only `edge` publishes ports (80 and 443): Docker bypasses ufw for published ports (manifest: guard; host: `scripts/preflight-prod.sh`)
 - [ ] `TRUSTED_PROXIES` without the network's gateway (`172.20.128.0/17`, not the `/16`)

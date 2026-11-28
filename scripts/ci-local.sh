@@ -23,7 +23,7 @@
 # Requisitos: uv, Docker, y Node 22 para npm-audit y frontend (el npm 11 de
 # Node 24 rechaza el package-lock.json; CI usa Node 22). `lint` corre dentro de
 # python:3.11-slim porque scripts/lint.sh necesita bash 4 y macOS trae 3.2.
-# `integration` levanta un PostgreSQL y un Redis desechables (scripts/test-app.sh
+# `integration` levanta un PostgreSQL desechable (scripts/test-app.sh
 # recrea la base antes de cada dominio), y `worm` un RustFS; se borran al terminar.
 #
 # Resultado: un PASS/FAIL por trabajo en $OUT/results.txt y el log completo en
@@ -82,19 +82,18 @@ job_docs() {
     local B; B=$(venv docs mkdocs mkdocs-material mkdocs-static-i18n)
     "$B/mkdocs" build --strict --site-dir "$OUT/site"
 }
-job_integration() {  # un PostgreSQL y un Redis desechables; test-app.sh recrea la base por dominio
-    local B port=55500 rport=55600 name=cilocal-pg-app rname=cilocal-redis-app rc=0
+job_integration() {  # un PostgreSQL desechable; test-app.sh recrea la base por dominio
+    local B port=55500 name=cilocal-pg-app rc=0
     B=$(app_venv)
-    docker rm -f "$name" "$rname" >/dev/null 2>&1
+    docker rm -f "$name" >/dev/null 2>&1
     docker run -d --rm --name "$name" -e POSTGRES_USER=orpycamcp -e POSTGRES_PASSWORD=orpycamcp \
         -e POSTGRES_DB=orpycamcp_db -p "127.0.0.1:$port:5432" postgres:17-bookworm >/dev/null
-    docker run -d --rm --name "$rname" -p "127.0.0.1:$rport:6379" redis:7-alpine >/dev/null
     for _ in $(seq 1 60); do docker exec "$name" pg_isready -U orpycamcp -d orpycamcp_db -q && break; sleep 1; done
     sleep 2
     DATABASE_URL="postgresql+asyncpg://orpycamcp:orpycamcp@localhost:$port/orpycamcp_db" RUN_INTEGRATION=1 \
-        REDIS_URL="redis://localhost:$rport/0" PATH="$B:$PATH" \
+        PATH="$B:$PATH" \
         ./scripts/test-app.sh integration ${INTEG_ONLY:-} || rc=$?
-    docker rm -f "$name" "$rname" >/dev/null 2>&1
+    docker rm -f "$name" >/dev/null 2>&1
     return $rc
 }
 job_worm() {

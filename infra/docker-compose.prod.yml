@@ -14,7 +14,6 @@ name: orpyca-mcp
 # ✓ PostgreSQL backup strategy configured
 # ✓ MinIO access logs enabled
 # ✓ TLS certificates installed for the public hostnames
-# ✓ Redis persistence enabled (RDB or AOF)
 # ✓ All services have resource limits
 # ✓ External logging configured (ELK, Datadog, etc.)
 # ✓ Network isolation (internal services on private network)
@@ -50,7 +49,6 @@ volumes:
   # decisión de la entidad, después de migrar y con acta.
   minio-data:
   objectstore-data:
-  redis-data:
 
 # Migraciones al arrancar (AREA-13-08, ADR-053). Todo servicio espera a
 # `migrate-docuboto`, el único migrador (imagen `app`,
@@ -137,34 +135,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  redis:
-    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-    container_name: orpycamcp-redis-prod
-    restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?Redis password required}
-    networks:
-      - orpycamcp-net
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 1G
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   minio:
     # RustFS, no MinIO. Tag FIJO y con digest, no `latest`: aquí vive el
     # Object-Lock en modo COMPLIANCE, donde una retención mal aplicada es
@@ -244,7 +214,6 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       APP_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -314,8 +283,6 @@ services:
       migrate-docuboto:
         condition: service_completed_successfully
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       minio:
         condition: service_healthy

@@ -367,7 +367,7 @@ La capa de conocimiento (búsqueda y antecedentes sobre texto completo; generaci
 | 10 | Recibida una **transferencia**, el expediente queda **congelado** | Alteración del acervo transferido |
 | 11 | Todo radicado nace con **tipo documental y dependencia** (E/I → destino; S → origen; Ac. 060 §5.2) | Documento sin serie TRD ni bandeja |
 | 12 | Todo radicado **clasificado o reservado** lleva su fundamento (nunca NULL: lo sostiene la base) | Fila sin motivo en el índice del art. 20 |
-| 13 | El evento de **cambio de nivel** nace en la misma transacción que el cambio (outbox) | Índice semántico sirviendo un nivel obsoleto |
+| 13 | El evento de **cambio de nivel** nace en la misma transacción que el cambio (tabla `eventos`, ADR-049) | Índice semántico sirviendo un nivel obsoleto |
 | 14 | Publicar un radicado **no publica sus anexos**; lo recibido por la ventanilla pública no se publica de oficio | Difusión de datos de terceros (Ley 1581) |
 | 15 | La radicación pública deja **constancia de la autorización de tratamiento** y es **idempotente** por clave | Radicado sin consentimiento; dos consecutivos por un reintento |
 

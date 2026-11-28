@@ -10,7 +10,7 @@ This is the map of what Docuboto already does and how it is built, so tech leads
 - **Tech leads**: read Architecture and Core modules to find the owning service of any change, then How to plan new work.
 - **Deeper reasons** behind each decision live in the ADRs under `docs/es/adr/` (Spanish). References like ADR-035 point there.
 
-Naming note: internal identifiers still use the upstream prefix `orpycamcp` (shared library `orpycamcp_common`, Redis streams `orpycamcp.*`). Read `orpycamcp` as "the system".
+Naming note: internal identifiers still use the upstream prefix `orpycamcp` (shared library `orpycamcp_common`, event streams `orpycamcp.*`). Read `orpycamcp` as "the system".
 
 ## System overview
 
@@ -25,7 +25,7 @@ It is a fork of [OrpycaMCP](https://gitlab.com/orpyca/orfeo_mcp) under AGPL-3.0.
 | Backend services | Python 3.11, FastAPI, Pydantic v2, asyncpg with raw SQL (no ORM, ADR-003) |
 | Frontend | SvelteKit 2 (Svelte 4), `adapter-node`, Bulma, SSR only, acts as backend-for-frontend |
 | Database | PostgreSQL 15, one database, one schema per tenant |
-| Messaging | Redis Streams with consumer groups and a transactional outbox |
+| Messaging | Per-tenant PostgreSQL event tables, published in the domain transaction; `LISTEN/NOTIFY` wake-up (ADR-049) |
 | Object storage | RustFS (S3-compatible) with Object Lock / WORM for preservation |
 | Identity | Issued by the app (ADR-048): argon2id, ES256 JWTs, JWKS, OIDC discovery and `client_credentials`; TOTP 2FA as a signing step-up |
 | Intelligence | No in-process models (ADR-046). knowledge-service answers from document-service FTS, or delegates to a provider over PPI v1.4.0 when the tenant is on `ppi` (ADR-051). No MCP layer, no generation route |
@@ -62,7 +62,7 @@ The four largest areas (archive, frontend, document, signature) hold about two t
 
 ## Architecture and design patterns
 
-One process authenticates once, each domain authorizes against the tenant schema, and everything security-sensitive is written once in a shared library that guard tests protect. Every request from the browser goes through the SvelteKit server, then the app; domains call each other through `<package>/api.py` and publish Redis Streams events (ADR-047).
+One process authenticates once, each domain authorizes against the tenant schema, and everything security-sensitive is written once in a shared library that guard tests protect. Every request from the browser goes through the SvelteKit server, then the app; domains call each other through `<package>/api.py` and publish events into PostgreSQL in the same transaction (ADR-047, ADR-049).
 
 ```mermaid
 graph TB
@@ -85,7 +85,6 @@ graph TB
     end
 
     PG[("PostgreSQL<br/>one database, schema per entity")]
-    RD[("Redis<br/>streams (until ADR-049)")]
     S3[("RustFS (S3)<br/>Object Lock / WORM (until ADR-050)")]
 
     Browser --> EDGE
@@ -94,7 +93,6 @@ graph TB
     FE -->|Bearer JWT| MW
     KNO -.->|"PPI v1.4.0, only with PPI_PROVIDER_URL"| PPI["Intelligence provider (optional)"]
     app --> PG
-    app --> RD
     app --> S3
 ```
 
@@ -113,7 +111,7 @@ Only `edge` is published in production, and it answers 404 on `/metrics`. knowle
 | Signed, single-use identity headers | `orpycamcp_common.identidad` (ADR-036, ADR-044) | A container that reaches a service port cannot forge or replay a user |
 | Authorization resolved in the DB, not cached | `orpycamcp_common.rbac` (ADR-013) | A revoked permission takes effect on the next call; fail-closed |
 | Clearance with no-read-up | `rbac.nivel_efectivo` (RF-SEG-08) | Effective level = max(live level, embedded level); unknown = classified |
-| Transactional outbox + Redis Streams | `eventos_salientes` table, `orpycamcp_common.events` (ADR-009, ADR-021) | No event lost after commit; at-least-once delivery |
+| Events in the domain transaction | `eventos` / `evento_entregas` tables, `orpycamcp_common.events`, `docuboto.core.bus` (ADR-009, ADR-021, ADR-049) | An event exists if and only if its change does; at-least-once delivery |
 | Idempotent consumers + dead-letter queue | Consumer groups per service, `evento_dead_letter`, `admin_deadletter` routers | Safe retries; admins can inspect, replay or discard failed events |
 | Hash-chained, append-only audit | `public.audit_log`, `orpycamcp_common.audit` (ADR-008) | Tamper-evident audit per tenant; DB trigger blocks UPDATE/DELETE |
 | Pluggable providers (adapter) | `SignerProvider` in signature-service | Swap signing vendors without touching business code |
@@ -135,7 +133,7 @@ Only `edge` is published in production, and it answers 404 on `/metrics`. knowle
 1. `UsuarioActualMiddleware` validates the Bearer JWT once and stores the caller in `request.state`; client-sent identity headers are dropped.
 2. `get_tenant_conn` (`orpycamcp_common.database`) checks that the entity exists and sets `search_path` to the tenant schema.
 3. `require_permission("PERM_X")` (`orpycamcp_common.clearance`) resolves RBAC permission and CRUD level in the tenant DB.
-4. The router calls a service function, which uses repositories (SQL), other domains through `<package>.api` (function calls) and the outbox (events).
+4. The router calls a service function, which uses repositories (SQL), other domains through `<package>.api` (function calls) and `events.emit` in the same transaction (events).
 5. The audit log records the action, including denials.
 
 ### Communication between services
@@ -144,7 +142,7 @@ Only `edge` is published in production, and it answers 404 on `/metrics`. knowle
 | --- | --- |
 | HTTP to the app (through `edge` in production) | Every user operation |
 | Function call through `<package>/api.py` | One domain using another, for example document → `storage.api` for bytes. Only `<package>.api` may be imported across domains (`test_contrato_api.py`) |
-| Redis Streams events | Domain events, for example `document.radicado.created`, consumed by workflow, signature and notification (the PPI ingestion consumer runs in the app's lifespan only when `PPI_PROVIDER_URL` is set) |
+| Domain events (PostgreSQL bus) | Domain events, for example `document.radicado.created`, consumed by workflow, signature and notification (the PPI ingestion consumer runs in the app's lifespan only when `PPI_PROVIDER_URL` is set) |
 
 Event envelope fields: `event_id`, `event_type`, `version`, `tenant_slug`, `occurred_at`, `actor`, `correlation_id`, `dedup_key`, `payload` and an HMAC `firma`. Unsigned envelopes are rejected. Streams are named `orpycamcp.{service}.events`, dead letters `orpycamcp.{service}.deadletter`.
 
@@ -180,7 +178,7 @@ Installed into every image. Anything security-sensitive that more than one servi
 
 ### docuboto (the process)
 
-The composition root in `services/docuboto/docuboto/`: `main.py` (`create_app`, the one definition of middleware and handlers), `config.py` (`CommonSettings` plus one `Settings` class per domain), `core/lifespan.py` (pool, Redis, every background loop in a `BackgroundTasks` group, heavy work behind `heavy_slot()`), `core/security.py`, `routers/health.py` and `routers/metrics.py`.
+The composition root in `services/docuboto/docuboto/`: `main.py` (`create_app`, the one definition of middleware and handlers), `config.py` (`CommonSettings` plus one `Settings` class per domain), `core/lifespan.py` (pool, every background loop in a `BackgroundTasks` group, heavy work behind `heavy_slot()`), `core/security.py`, `routers/health.py` and `routers/metrics.py`.
 
 **Middleware chain, outermost first**:
 
@@ -217,7 +215,7 @@ Permissions used: `USUA_PERM_ADMIN`, `USUA_PERM_ROOT`, `PERM_FIRMA`.
 - `SigningKeyService`: `enroll`, `load_and_sign_digest`, `revoke_admin`, `revocation_status`. Keys are envelope-encrypted under a rotating KEK.
 - Ops CLIs in `app/ops/`: `grant_root`, `rewrap_signing_keys`, `purge_revoked_signing_keys`, `verify_audit_chains` (used by backup and restore).
 
-**Jobs**: `signing_key_maintenance.maintenance_loop` every 6 hours purges revoked key material and re-wraps keys to the active KEK. No Redis streams.
+**Jobs**: `signing_key_maintenance.maintenance_loop` every 6 hours purges revoked key material and re-wraps keys to the active KEK. Publishes no events.
 
 **Tables** (20 tenant, 9 global migrations): `auth_users`, `auth_groups`, `auth_memberships`, `auth_permissions`, `auth_group_permissions`, `urd_usuaroldep`, `security_levels`, `role_clearance`, `auth_user_totp`, `auth_user_signing_key`; global `public.audit_log` (partitioned, mutation guard), `public.audit_chain_runs`.
 
@@ -235,7 +233,7 @@ Registry of institutions and their per-tenant configuration: holidays and busine
 
 **Key functions**: `TenantService.create/get_by_slug/update`; `PinarService.create_plan`, `aprobar`, `ejecutar`, `cerrar`, `tablero`, `mapa_ruta`; business days in `core/calendar.py`.
 
-**Tables** (16 tenant, 5 global): `public.tenants`; `dependencias` and its history tables; `non_business_days`, `sgd_param_admin`, `admin_audit`; nine catalog tables; nine `pinar_*` tables. No workers or Redis use.
+**Tables** (16 tenant, 5 global): `public.tenants`; `dependencias` and its history tables; `non_business_days`, `sgd_param_admin`, `admin_audit`; nine catalog tables; nine `pinar_*` tables. No workers and no events.
 
 ### storage-service
 
@@ -255,7 +253,7 @@ Stores bytes in RustFS with versioning, fixity and soft delete, and owns long-te
 - `LegalHoldService`: `fijar`, `levantar`, `listar` (many holds per object).
 - `replicate_aip`, `FormatMigrationService.migrar_a_pdfa` (Ghostscript), veraPDF validator, WeasyPrint renderer, PRONOM format identification.
 
-**Jobs**: `jobs/format_migration.py` daily loop, only when `FORMAT_MIGRATION_ENABLED`. No Redis.
+**Jobs**: `jobs/format_migration.py` daily loop, only when `FORMAT_MIGRATION_ENABLED`. Publishes no events.
 
 **Tables** (25 tenant migrations): `files`, `aip`, `preservacion_plan`, `preservacion_evento`, `preservacion_worm_objeto`, `preservacion_legal_hold`, `preservacion_migracion`.
 
@@ -295,7 +293,7 @@ Registry `get_provider(name)`; default `signer_provider="xades_local"`. Implemen
 
 ### document-service
 
-Owns the radicado: incoming (Entrada), outgoing (Salida) and internal filings with atomic tracking numbers, attachments, third parties, classification and reserve, annulment, drafts and templates, email intake, the public window (ventanilla/PQRSD), postal shipments and interoperability (export/import, OAI-PMH, CMIS). It is the only service that publishes through a transactional outbox. 113 app files (28k lines), 129 test files.
+Owns the radicado: incoming (Entrada), outgoing (Salida) and internal filings with atomic tracking numbers, attachments, third parties, classification and reserve, annulment, drafts and templates, email intake, the public window (ventanilla/PQRSD), postal shipments and interoperability (export/import, OAI-PMH, CMIS). It publishes its events inside the domain transaction, like workflow and signature (ADR-049). 113 app files (28k lines), 129 test files.
 
 | Router | Prefix | Capabilities |
 | --- | --- | --- |
@@ -324,18 +322,18 @@ Permissions used: `PERM_RADI`, `PERM_RADI_SALIDA`, `PERM_SOL_ANULAR`, `PERM_PANU
 - `BorradorService`: `crear_plantilla`, `combinar_plantilla(plantilla_id, payload, ...)`, `aprobar`, `devolver_a_borrador`, `radicar(borrador_id, ...)`.
 - `PostalService`: `create`, `update_estado`, `apply_operator_callback(raw_body, signature_header, tenant_slug, suspendida)`, `enviar_pendientes()`.
 - `TerceroService`: `buscar`, `crear_o_recuperar`, `crear_provisional`, `conciliar`, `fusion`, `resolver_por_email`.
-- `VentanillaService.radicar(payload, document_service, ficheros, idempotency_key, ip)`; `antirrobots.py` (ALTCHA, Redis anti-replay).
+- `VentanillaService.radicar(payload, document_service, ficheros, idempotency_key, ip)`; `antirrobots.py` (ALTCHA; anti-replay in the `altcha_usados` table).
 - `EmailCuentaService`, `EmailBandejaService` (`sincronizar`, `reservar`, `radicar`), `email_sondeo.bucle_de_sondeo(pool, tenant_slug)`.
 - `AnulacionService` and `DesclasificacionService`: `solicitar`, `aprobar`, `rechazar` (second person required).
-- `outbox`: `encolar(conn, stream, event_type, tenant_slug, actor, dedup_key, payload)`, `enviar`, `retransmitir`.
+- Events: `events.emit(conn, stream=…, event_type=…, tenant_slug=…, actor=…, dedup_key=…, payload=…)` inside the domain transaction; constants `RECLASIFICADO` and `VENCIMIENTO_CAMBIADO` in `core/constants.py`.
 - `PurgaService.purgar_radicados`: the only destructive path, triggered by archive-service disposal batches.
 - `ExportService`, `ImportService`, `OaiService`, `CmisService`.
 
-**Background loops** (in `main.py` lifespan): `barrido.bucle_de_barrido` every 300 s per tenant retries orphan purges, resumes batches, relays the outbox and drains postal callbacks; `email_sondeo` is off by default and covers one tenant per deployment.
+**Background loops** (in `main.py` lifespan): `barrido.bucle_de_barrido` every 300 s per tenant retries orphan purges, resumes batches, purges confirmed bus events older than `EVENTOS_RETENCION_DIAS` (30) and drains postal callbacks; `email_sondeo` is off by default and covers one tenant per deployment.
 
 **Events produced** on `orpycamcp.document.events`: `document.radicado.created`, `.annulled`, `.reclassified`, `.purged`; `document.envio.en_transito`, `.entregado`, `.devuelto`, `.fallido`; `documento.contenido_cambiado`. Consumers: workflow, signature, notification.
 
-**Tables** (51 tenant, 5 global migrations): `radicados`, `tracking_sequences`, `anexos`, `signatures`, `metadata_templates`, `metadata_elements`, `batch_jobs`, `eventos_salientes` (outbox), `borrador`, `plantilla`, `radicado_anulacion`, `reclasificacion_solicitudes`, `tercero`, `radicado_actor`, `email_*` (5 tables), `postal_*` (5 tables); global DIVIPOLA tables.
+**Tables** (51 tenant, 5 global migrations): `radicados`, `tracking_sequences`, `anexos`, `signatures`, `metadata_templates`, `metadata_elements`, `batch_jobs`, `eventos` / `evento_entregas` / `evento_ultimo_error` (event bus), `altcha_usados`, `borrador`, `plantilla`, `radicado_anulacion`, `reclasificacion_solicitudes`, `tercero`, `radicado_actor`, `email_*` (5 tables), `postal_*` (5 tables); global DIVIPOLA tables.
 
 **Calls**: tenant (business days, params, dependencias), storage (upload, content, purge, render), signature (draft chains), notification (filing receipt), IMAP/OAuth mail providers.
 
@@ -389,7 +387,7 @@ Routes radicados between dependencias: assignment, transfer, return, rollback, f
 
 **Key functions**: `WorkflowService` (1,444 lines): `assign(payload, assigned_by, sistema)`, `transfer`, `execute_transaction(radicado_id, payload, actor)`, `complete_step`, `inbox(box, dept_code, ...)`, `devolver`, `rollback`, `finalizar`, `reassign_cascade`, `scan_overdue()`. Pure functions: `rules_engine.eval_condition(cond, context)`, `matches_conditions`, `estado_radicado.derivar_estado_radicado(...)`. `distribution.auto_distribute(conn, tenant_slug, payload)` is idempotent.
 
-**Events**: consumes `document.radicado.created` (auto-distribution, dead-letter after 5 deliveries); produces `workflow.step.created`, `.completed`, `.overdue`, `workflow.radicado.estado_cambiado` on `orpycamcp.workflow.events`, best-effort after commit with no outbox.
+**Events**: consumes `document.radicado.created` (auto-distribution, dead-letter after 5 deliveries); produces `workflow.step.created`, `.completed`, `.overdue`, `workflow.radicado.estado_cambiado` on `orpycamcp.workflow.events`, inside the act's transaction (ADR-049).
 
 **Tables** (21 tenant migrations): `flow_steps`, `flow_events`, `transaction_types`, `workflow_rules`, `workflow_rule_activations`, `visto_bueno`, `evento_dead_letter`.
 
@@ -450,7 +448,7 @@ The core of all 21 functional epics (138 functional requirements in the specDriv
 
 ```mermaid
 graph TB
-    S1["1 · Register the radicado (document-service)<br/>UI, citizen portal (PQRSD), email inbox or bulk filing<br/>tracking number, due date in business days, outbox event"]
+    S1["1 · Register the radicado (document-service)<br/>UI, citizen portal (PQRSD), email inbox or bulk filing<br/>tracking number, due date in business days, event in the same transaction"]
     S2["2 · Distribute and process (workflow-service)<br/>rules assign a dependencia; inbox, transfer, return<br/>vistos buenos; status derived from each step"]
     S3["3 · Respond and sign (document + signature)<br/>draft from template, approval, filed as a linked Salida<br/>XAdES seal or personal signature with 2FA"]
     S4["4 · File in an expediente (archive-service)<br/>link radicados; electronic index rebuilt and sealed<br/>index stored WORM; access history kept"]
@@ -513,7 +511,7 @@ All services share one PostgreSQL database: global tables live in `public`, and 
 | --- | --- | --- |
 | PostgreSQL `public` | `tenants`, `audit_log` (partitioned, hash-chained), `schema_migrations`, `audit_chain_runs`, DIVIPOLA | Global tables are always written as `public.` in SQL |
 | PostgreSQL `tenant_{slug}` | Every domain table (radicados, expedientes, flows, signatures, files, …) | `search_path` is set to the tenant schema only |
-| Redis | Streams (`orpycamcp.{service}.events`, `.deadletter`), gateway auth cache, rate-limit windows, identity nonces, ALTCHA anti-replay | Domain streams have bounded retention |
+| PostgreSQL (event bus) | `eventos`, `evento_entregas`, `evento_ultimo_error` per tenant; ALTCHA anti-replay in `altcha_usados` | Confirmed events purged after `EVENTOS_RETENCION_DIAS` (30); last errors after 24 h |
 | RustFS (S3) | Per-tenant buckets `…-{slug}-documents`, `…-{slug}-preservation` (Object Lock COMPLIANCE), `…-preservation-replica` | Never exposed directly; bytes go through storage-service |
 
 ### Migrations by service
@@ -546,14 +544,14 @@ Rule: add the next numbered file under `migrations/tenant/` or `migrations/globa
 
 | Event | Producer | Consumers | Delivery |
 | --- | --- | --- | --- |
-| `document.radicado.created` | document | workflow (auto-distribution), notification (filing notice) | Outbox |
-| `document.radicado.reclassified` | document | signature (re-evaluate) | Outbox |
-| `document.envio.devuelto` | document | notification (return alert) | Outbox |
-| `document.envio.en_transito`, `.entregado`, `.fallido` | document | webhooks only | Outbox |
-| `documento.contenido_cambiado` | document (drafts) | signature (invalidate chains) | Outbox |
-| `workflow.step.created`, `.overdue` | workflow | notification | Best-effort, no outbox |
-| `workflow.step.completed`, `workflow.radicado.estado_cambiado` | workflow | webhooks only | Best-effort, no outbox |
-| `firma.challenge.emitido`, `firma.indice.firmado`, `firma.lta_renovada` | signature | none today | Best-effort |
+| `document.radicado.created` | document | workflow (auto-distribution), notification (filing notice) | Same transaction |
+| `document.radicado.reclassified` | document | signature (re-evaluate) | Same transaction |
+| `document.envio.devuelto` | document | notification (return alert) | Same transaction |
+| `document.envio.en_transito`, `.entregado`, `.fallido` | document | webhooks only | Same transaction |
+| `documento.contenido_cambiado` | document (drafts) | signature (invalidate chains) | Same transaction |
+| `workflow.step.created`, `.overdue` | workflow | notification | Same transaction |
+| `workflow.step.completed`, `workflow.radicado.estado_cambiado` | workflow | webhooks only | Same transaction |
+| `firma.challenge.emitido`, `firma.indice.firmado`, `firma.lta_renovada` | signature | none today | Same transaction |
 
 archive-service, storage-service, auth-service and tenant-service publish no stream events; they talk over internal HTTP and write to the audit log.
 
@@ -589,7 +587,7 @@ Security is enforced in layers and checked by 81 architecture guard tests, but t
 | Public forms | ALTCHA proof-of-work and provisional record for PQRSD | document-service, ADR-038 |
 | Supply chain | Images pinned by tag and digest, Trivy scans, `pip-audit` threshold (fail-closed), `npm audit` | `.github/workflows/`, `scripts/audit_umbral.py` |
 
-Accepted residual risks: the rate limiter fails open without Redis; invalid tokens are not cached (one IP can force about 1,200 validations a minute); webhook deliveries are logged but have no durable table; no HSM/KMS, and the signing CA and TSA are local, verifiable but not accredited.
+Accepted residual risks: rate limiting is per IP in `edge` (nginx) and per user in process memory, so it resets on restart; invalid tokens are not cached (one IP can force about 1,200 validations a minute); webhook deliveries are logged but have no durable table; no HSM/KMS, and the signing CA and TSA are local, verifiable but not accredited.
 
 ### Tests by domain
 
@@ -632,7 +630,7 @@ Priority below is a suggested starting point from this review, not a decision; l
 | Diverged per-service copies: `core/clearance.py` (7 variants, 110–292 lines), `internal_auth.py`, `database.py`, `health.py`, migrations `runner.py` (9 copies) | All services | Security logic drifting apart is how bypasses appear | Move into `orpycamcp_common` and add a "defined once" guard test per module | High | Open |
 | Very large files: `archive_service.py` 6,921 lines, `transferencia_service.py` 5,680; screens `bandeja` 3,380 and `expedientes/[id]` 3,243 | archive, frontend | Slow reviews, merge conflicts, hard onboarding | Split by subdomain (TRD, disposal, expediente lifecycle; catalog per epic; screen into components) behind current tests | Medium | Open |
 | Cross-service table writes: workflow writes `radicados`; document updates `flow_steps` | workflow, document | Hidden coupling blocks independent schema changes | Replace with internal API or events owned by the table's service | Medium | Open |
-| Uneven event reliability: workflow publishes best-effort with no outbox; `firma.*` events have no consumer | workflow, signature | Lost notifications after a Redis blip | Reuse the document-service outbox pattern in workflow | Medium | Open |
+| Uneven event reliability: workflow published best-effort with no outbox; `firma.*` events have no consumer | workflow, signature | Lost notifications after a broker blip | Publish every event in the domain transaction | Medium | Closed by ADR-049 (`firma.*` still has no consumer) |
 | No Prometheus in the production manifest, no alerts; DLQ list loses the oldest above 1,000 pending; missing `phase=sealing` signals | Ops | Failures surface only when users complain | Add Prometheus + alert rules to prod compose; cursor-paginate DLQ | Medium | Open |
 | Edge rate limits are only tested by reading the nginx template | edge | A broken `limit_req` zone fails at nginx startup, not in CI | Smoke the template with `nginx -t` in CI | Low | Open |
 | Overdue detection only on manual `POST /overdue/scan` | workflow | Legal response deadlines can pass without alert | Add a periodic job like the archive loops | Medium | Open |
@@ -648,7 +646,7 @@ Priority below is a suggested starting point from this review, not a decision; l
 | Expediente metadata not editable (`ExpedienteUpdate` forbids extra); metadata without an active template is saved unvalidated | archive, document | Data quality | Allow versioned metadata edits; require a template per document type | Low | Open |
 | Dependency drift: pydantic, cryptography, uvicorn, lxml patch versions differ across services; CI pins mypy 1.11; LLM CI jobs install Claude Code unpinned | Build | Non-reproducible builds | One shared constraints file; pin CI tools | Low | Open |
 
-Accepted residuals (documented, no action planned): no permission cache by design (ADR-013), rate limiter fails open without Redis, invalid tokens not cached.
+Accepted residuals (documented, no action planned): no permission cache by design (ADR-013), in-memory per-user rate limit resets on restart, invalid tokens not cached.
 
 ### Ratchet lists to shrink
 
@@ -702,7 +700,7 @@ Start every estimate by naming the owning service and the guard tests the change
 
 **New event**
 
-- [ ] Publish through the outbox with the shared signed envelope.
+- [ ] Publish with `events.emit(conn, …)` inside the domain transaction, with the shared signed envelope.
 - [ ] Consumers are idempotent on `event_id`, ack only on success, and dead-letter after 5 deliveries.
 - [ ] Add the event to the catalog in this document.
 

@@ -110,8 +110,8 @@ creation and on every delivery, DNS TOCTOU closed), but **deliveries are not rec
 `logger.warning`—; an administrator who subscribes an external URL with no `event_types` lets all
 unclassified content out and today only rotatable logs keep a trace. The append-only
 `webhook_entregas` table is still pending. Accepted limiter residuals: invalid tokens are not cached
-(one IP can force up to 1200 validations a minute against auth-service) and the limiter fails open
-without Redis. A guardian (`shared/tests/test_la_documentacion_dice_lo_que_hay.py`) ties each of these
+(one IP can force up to 1200 validations a minute against auth-service) and the per-user quota lives in
+process memory, so it resets on restart (the per-IP limit is in `edge`). A guardian (`shared/tests/test_la_documentacion_dice_lo_que_hay.py`) ties each of these
 sentences to the code fact that would make it false.
 
 ## Webhook secret encrypted at rest

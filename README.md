@@ -1,7 +1,7 @@
 # Docuboto
 
 > **SGDEA / document management** — fork of [OrpycaMCP](https://gitlab.com/orpyca/orfeo_mcp) (AGPL v3)
-> FastAPI microservices · PostgreSQL · RustFS (S3) · Redis · SvelteKit
+> FastAPI microservices · PostgreSQL · RustFS (S3) · SvelteKit
 
 Docuboto keeps OrpycaMCP’s Orfeo-like domain (radicación, bandejas, TRD, expedientes, archivo, PQRSD, MCP) under the same **AGPL-3.0** license. See `NOTICE` and `LICENSE`.
 

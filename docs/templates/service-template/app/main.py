@@ -14,7 +14,7 @@ Reemplaza esta descripción por las responsabilidades del servicio.
 Convenciones del proyecto (ver CLAUDE.md y docs/es/adr/):
 - asyncpg + SQL crudo (sin SQLAlchemy/ORM) — ADR-003.
 - Multi-tenant por schema tenant_{slug} — ADR-002.
-- Eventos por Redis Streams orpycamcp.__SERVICE_NAME__.events — ver contrato de eventos.
+- Eventos en la tabla `eventos` del tenant (orpycamcp_common.events.emit, ADR-049) — ver contrato de eventos.
 """
 
 import logging

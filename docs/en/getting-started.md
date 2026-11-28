@@ -43,8 +43,8 @@ environment's `python`/`pytest` on your PATH:
 
 Each domain runs in **its own pytest invocation**: domain `conftest` files set their own
 environment, and in a single session the collection order would decide the result. The script
-derives the domain list from the tree. `integration` needs `DATABASE_URL`, `REDIS_URL`, and
-`RUN_INTEGRATION=1`, and it recreates the database and flushes Redis before each domain.
+derives the domain list from the tree. `integration` needs `DATABASE_URL` and
+`RUN_INTEGRATION=1`, and it recreates the database before each domain.
 
 To run locally what `.github/workflows/ci.yml` runs:
 
@@ -54,7 +54,7 @@ To run locally what `.github/workflows/ci.yml` runs:
 ```
 
 `scripts/ci-local.sh` mirrors `ci.yml` (change one, change the other); `integration` starts a
-throwaway PostgreSQL and Redis. `./scripts/lint.sh` runs ruff and mypy over the whole app.
+throwaway PostgreSQL. `./scripts/lint.sh` runs ruff and mypy over the whole app.
 
 ## Access URLs
 

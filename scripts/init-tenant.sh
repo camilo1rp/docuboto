@@ -25,7 +25,7 @@
 #
 # Este script se ejecuta DESDE EL HOST (no está dentro de ninguna imagen).
 # Requiere que la infraestructura esté levantada:
-#   docker compose up -d postgres redis
+#   docker compose up -d postgres
 
 set -euo pipefail
 

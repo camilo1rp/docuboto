@@ -33,7 +33,7 @@ Dockerfile  requirements.txt  .env.example  pytest.ini  tests/test_health.py
    grep -rl '__SERVICE_NAME__\|__SERVICE_TITLE__\|__PORT__' . \
      | xargs sed -i 's/__SERVICE_NAME__/knowledge/g; s/__SERVICE_TITLE__/Knowledge/g; s/__PORT__/8011/g'
    ```
-3. **Registrar en `docker-compose.yml`** un bloque `build: ./services/<nombre>-service` con sus puertos, `DATABASE_URL`/`REDIS_URL`/Keycloak y `depends_on`.
+3. **Registrar en `docker-compose.yml`** un bloque `build: ./services/<nombre>-service` con sus puertos, `DATABASE_URL` y `depends_on`.
 4. **Registrar las rutas** en `services/api-gateway/app/core/routes.py`.
 5. **Cliente Keycloak** en el realm, si el servicio valida JWT.
 6. Añadir las tablas del servicio a la cadena única, en `services/docuboto/migrations/` ([ADR-053](../../es/adr/ADR-053-esquema-legible-y-lanzamientos.md)).
@@ -43,7 +43,7 @@ Dockerfile  requirements.txt  .env.example  pytest.ini  tests/test_health.py
 - **asyncpg + SQL crudo**, sin SQLAlchemy/Alembic — [ADR-003](../../es/adr/ADR-003-asyncpg-sin-orm.md).
 - **`DATABASE_URL`** se mantiene en formato `postgresql+asyncpg://` y se normaliza con `settings.database_url_asyncpg` (asyncpg no entiende el sufijo `+asyncpg`).
 - **Multi-tenant por schema** `tenant_{slug}` — [ADR-002](../../es/adr/ADR-002-multi-tenancy-schema-isolation.md); el `search_path` se fija por petición.
-- **Eventos** por Redis Streams `orpycamcp.<servicio>.events` — ver `documentos/specDrive/00-contrato-eventos.md`.
+- **Eventos** con `events.emit(conn, …)` en la transacción del cambio (bus en PostgreSQL, ADR-049), stream `orpycamcp.<servicio>.events` — ver `documentos/specDrive/00-contrato-eventos.md`.
 - **Auditoría** vía la librería común contra `public.audit_log` — [ADR-008](../../es/adr/ADR-008-auditoria-inmutable.md).
 - **Migraciones** en la cadena única `services/docuboto/migrations/{global,tenant}/`, un archivo con nombre por tabla o grupo; las aplica `migrate-docuboto` — [ADR-053](../../es/adr/ADR-053-esquema-legible-y-lanzamientos.md).
 - Formato de error JSON `{error, detail, status}` y `redirect_slashes=False` (igual que los servicios existentes).

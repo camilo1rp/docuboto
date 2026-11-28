@@ -19,8 +19,8 @@
 # fijan entorno y neutralizan piezas propias, y en una sola sesión el orden de
 # recolección decidiría el resultado. La lista se DERIVA del árbol.
 #
-# `integration` necesita DATABASE_URL, REDIS_URL y RUN_INTEGRATION=1. Antes de
-# cada dominio recrea la base y vacía Redis: cada conftest asume un Postgres
+# `integration` necesita DATABASE_URL y RUN_INTEGRATION=1. Antes de cada
+# dominio recrea la base: cada conftest asume un Postgres
 # virgen con la cadena única aplicada (ADR-053), como cuando era un trabajo de CI.
 set -uo pipefail
 
@@ -46,7 +46,7 @@ dominios() {
 base_nueva() {
     python - <<'PY'
 import asyncio, os
-import asyncpg, redis
+import asyncpg
 
 url = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
 base, nombre = url.rsplit("/", 1)
@@ -60,7 +60,6 @@ async def main() -> None:
         await conn.close()
 
 asyncio.run(main())
-redis.Redis.from_url(os.environ["REDIS_URL"]).flushall()
 PY
 }
 

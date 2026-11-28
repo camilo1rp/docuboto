@@ -61,10 +61,10 @@ validar ni sin comillas en un `SET search_path`.
 | Schema PostgreSQL | `tenant_{slug con guion → guion bajo}` | `tenant_gobernacion_caldas` |
 | Bucket de documentos | `orpycamcp-{slug}-documents` | `orpycamcp-gobernacion-caldas-documents` |
 | Bucket de preservación (WORM) | `orpycamcp-{slug}-preservation` | `orpycamcp-gobernacion-caldas-preservation` |
-| Stream Redis (compartido por todas las entidades) | `orpycamcp.{service}.events` | `orpycamcp.document.events` |
+| Stream de eventos (columna `stream` de la tabla `eventos` del schema de la entidad) | `orpycamcp.{service}.events` | `orpycamcp.document.events` |
 
-El stream **no lleva el slug**: es uno por servicio, y la entidad viaja dentro del sobre firmado del
-evento (ADR-010).
+El stream **no lleva el slug**: es uno por servicio, y desde ADR-049 los eventos viven en el schema
+de la entidad; el sobre firmado (ADR-010) sigue llevando la entidad, que es la que verifica el consumidor.
 
 ## Estado de la entidad
 

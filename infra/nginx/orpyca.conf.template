@@ -35,7 +35,7 @@
 client_max_body_size 512M;
 
 # ─── Límite de tasa (ADR-047: antes en el api-gateway) ────────────────────────
-# Por IP, en memoria compartida de nginx; sin Redis. Los presupuestos son los que
+# Por IP, en memoria compartida de nginx; sin almacén externo. Los presupuestos son los que
 # tenía el gateway por minuto. `$binary_remote_addr` es la IP que ve `edge`: con
 # el proxy de usuario de Docker activo es la del puente para todo cliente (ver
 # "TRUSTED_PROXIES" en docs/es/deployment.md); entonces el cubo por IP se vuelve
