@@ -16,7 +16,7 @@ tanto nunca compite consigo misma) con lo que solo dos sesiones reales pueden de
    `gather`, y se comprueba el estado final, el asiento único y que el perdedor recibe
    `409 tercero_ya_conciliado` (no un 500 ni un doble efecto).
 2. **La respuesta pública no delata si el documento existía.** Por HTTP de punta a
-   punta (gate ALTCHA real contra Redis real, Postgres real): mismo cuerpo, mismas
+   punta (gate ALTCHA real contra `altcha_usados`, Postgres real): mismo cuerpo, mismas
    cabeceras, y —lo que sustituye a un cronómetro frágil— la MISMA secuencia de
    sentencias SQL con o sin ficha previa. Más un cronómetro grueso, a propósito laxo.
 3. **El trigger y los CHECK de la 049**: lo declarado es inmutable por cada columna y
@@ -32,19 +32,16 @@ import statistics
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock
 
 import asyncpg
 import pytest
 import pytest_asyncio
-import redis.asyncio as aioredis
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.database import tenant_schema
 
-from docuboto.config import document as settings
 from document.core import altcha
-from document.core.dependencies import get_public_tenant_conn, get_redis, get_tenant_client
+from document.core.dependencies import get_public_tenant_conn, get_tenant_client
 from tests.document.app import app
 from tests.document.integration.conftest import _require_dsn
 from tests.document.integration.politica_stub import ENTIDAD
@@ -174,21 +171,6 @@ class _Grabadora:
         return _con_registro
 
 
-class _RedisSoloAntireplay:
-    """`SET NX` va al Redis real (lo que se mide); los eventos del outbox, a la nada
-    (no se ensucia el stream de desarrollo con un tenant de prueba)."""
-
-    def __init__(self, real: aioredis.Redis) -> None:
-        self._real = real
-        self._otro = AsyncMock()
-
-    async def set(self, *a: Any, **k: Any) -> Any:
-        return await self._real.set(*a, **k)
-
-    def __getattr__(self, nombre: str) -> Any:
-        return getattr(self._otro, nombre)
-
-
 class _Tenant:
     async def get_params_strict(self, *, tenant_slug: str) -> dict:
         return await ENTIDAD.get_params_strict(tenant_slug=tenant_slug)
@@ -201,30 +183,17 @@ class _Tenant:
 async def puerta(tenant_ctx) -> AsyncGenerator[tuple[AsyncClient, _Grabadora, str, asyncpg.Connection], None]:
     slug, conn = await _entorno(tenant_ctx)
     grabadora = _Grabadora(conn)
-    real = aioredis.from_url(settings.redis_url)
-    claves: list[str] = []
-    original = real.set
-
-    async def _anota(clave: str, *a: Any, **k: Any) -> Any:
-        claves.append(clave)
-        return await original(clave, *a, **k)
-
-    real.set = _anota  # type: ignore[method-assign]
 
     async def _conn() -> AsyncGenerator[Any, None]:
         yield grabadora
 
     app.dependency_overrides[get_public_tenant_conn] = _conn
     app.dependency_overrides[get_tenant_client] = lambda: _Tenant()
-    app.dependency_overrides[get_redis] = lambda: _RedisSoloAntireplay(real)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, grabadora, slug, conn
     finally:
         app.dependency_overrides.clear()
-        if claves:
-            await real.delete(*claves)
-        await real.aclose()
 
 
 async def _radicar_http(client: AsyncClient, slug: str, identificacion: str, asunto: str):

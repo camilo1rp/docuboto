@@ -38,19 +38,11 @@ class _Pool:
         return False
 
 
-def _app(redis: object | None) -> TestClient:
+def _app() -> TestClient:
     app = FastAPI()
     app.include_router(health.router)
     app.include_router(metrics.router)
-    app.state.redis = redis
     return TestClient(app)
-
-
-def _redis_sano() -> MagicMock:
-    redis = MagicMock()
-    redis.ping = AsyncMock(return_value=True)
-    redis.xlen = AsyncMock(return_value=0)
-    return redis
 
 
 def _informativos_caidos():  # noqa: ANN202
@@ -63,28 +55,30 @@ def _informativos_caidos():  # noqa: ANN202
 
 
 def test_health_no_tiene_dependencias() -> None:
-    r = _app(None).get("/health")
+    r = _app().get("/health")
     assert r.status_code == 200 and r.json()["status"] == "ok"
 
 
-def test_ready_lo_deciden_la_base_y_redis() -> None:
+def test_ready_lo_decide_solo_la_base() -> None:
     conn = MagicMock(fetchval=AsyncMock(return_value=1))
     p = _informativos_caidos()
     with patch.object(health, "get_pool", return_value=_Pool(conn)), p[0], p[1], p[2]:
-        r = _app(_redis_sano()).get("/health/ready")
+        r = _app().get("/health/ready")
     assert r.status_code == 200, r.text
     cuerpo = r.json()
+    # ADR-049: eventos, colas y cerrojos viven en la base; no hay segundo almacén.
+    assert set(cuerpo["checks"]) == {"database", "storage", "smtp"}
     # Almacén y SMTP caídos se informan, no sacan al proceso de servicio.
     assert cuerpo["checks"]["storage"] != "ok"
     assert cuerpo["checks"]["smtp"] != "ok"
     assert cuerpo["degraded"] == ["audit_particiones"]
 
 
-def test_ready_sin_redis_es_503() -> None:
-    conn = MagicMock(fetchval=AsyncMock(return_value=1))
+def test_ready_sin_base_es_503() -> None:
+    conn = MagicMock(fetchval=AsyncMock(side_effect=OSError("sin base")))
     p = _informativos_caidos()
     with patch.object(health, "get_pool", return_value=_Pool(conn)), p[0], p[1], p[2]:
-        r = _app(None).get("/health/ready")
+        r = _app().get("/health/ready")
     assert r.status_code == 503
     assert r.json()["status"] == "not_ready"
 
@@ -92,30 +86,43 @@ def test_ready_sin_redis_es_503() -> None:
 def test_el_consumidor_muerto_y_su_dlq_se_ven() -> None:
     conn = MagicMock(fetchval=AsyncMock(return_value=1))
     estados = {"workflow": {"corriendo": False}, "signature": {"corriendo": True}}
-    informe = AsyncMock(return_value={"dead_letter": "degraded", "detalle": {"dlq": 3}})
+    pendientes = AsyncMock(side_effect=lambda grupo: 3 if grupo == health.GRUPO_WORKFLOW else 0)
     p = _informativos_caidos()
     with (
         patch.object(health, "get_pool", return_value=_Pool(conn)),
         patch.object(health.events, "consumer_status", return_value=estados),
-        patch.object(health.health_common, "consumer_report", informe),
+        patch.object(health, "_dlq_pendientes", pendientes),
         p[0], p[1], p[2],
     ):
-        r = _app(_redis_sano()).get("/health/ready")
+        r = _app().get("/health/ready")
     assert r.status_code == 200
     consumidores = r.json()["consumers"]
     assert consumidores["workflow"]["consumer"] == "reiniciando"
     assert consumidores["workflow"]["dead_letter"] == "degraded"
+    assert consumidores["workflow"]["detalle"]["dead_letter_pendientes"] == 3
     assert consumidores["signature"]["consumer"] == "ok"
+    assert consumidores["signature"]["dead_letter"] == "ok"
     assert "notification" not in consumidores  # no arrancó: no se inventa
 
 
-def test_cada_consumidor_supervisado_tiene_su_dlq() -> None:
-    assert set(health.CONSUMERS) == {"workflow", "notification", "signature"}
+def test_cada_consumidor_supervisado_tiene_su_grupo() -> None:
+    assert set(health.CONSUMERS) == {
+        "workflow",
+        "notification",
+        "signature",
+        "intelligence-gateway",
+    }
+
+
+def test_un_conteo_que_falla_no_degrada_el_veredicto() -> None:
+    informe = health.health_common.consumer_report({"corriendo": True}, None)
+    assert informe["dead_letter"] == "ok"
+    assert informe["detalle"]["dead_letter_pendientes"] is None
 
 
 def test_metrics_con_cabeceras_de_proxy_es_404() -> None:
     with patch.object(metrics, "get_pool", return_value=_Pool(MagicMock())):
-        r = _app(None).get("/metrics", headers={"X-Forwarded-For": "1.2.3.4"})
+        r = _app().get("/metrics", headers={"X-Forwarded-For": "1.2.3.4"})
     assert r.status_code == 404
 
 

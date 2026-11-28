@@ -11,7 +11,7 @@
 
 Cubre:
   1. CadenaRepository.actualizar_nivel_seguridad — repositorio puro (conn mockeado).
-  2. _handle() del document_consumer — consumidor Redis Streams con
+  2. _handle() del document_consumer — consumidor del bus de eventos con
      acquire_tenant y _audit patcheados.
   3. run() — xack condicional al éxito de _handle (A-1).
   4. _persist_dead_letter() — callback de dead-letter durable (R-4 / ADR-021):
@@ -28,13 +28,11 @@ Patrón de mock:
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
-import redis.exceptions as redis_exc
 from orpycamcp_common import events
 
 from signature.repositories.cadena_repository import CadenaRepository
@@ -74,7 +72,7 @@ def _reclassified_fields(
     nivel_anterior: int = 1,
     event_type: str = "document.radicado.reclassified",
 ) -> dict[str, str]:
-    """Construye los campos planos del stream Redis para un evento reclassified."""
+    """Construye los campos planos del bus para un evento reclassified."""
     payload: dict = {}
     if tracking_number is not None:
         payload["tracking_number"] = tracking_number
@@ -332,151 +330,30 @@ async def test_handle_completa_como_noop_cuando_tabla_firma_no_existe() -> None:
 
 
 # ===========================================================================
-# 4. run() — xack condicional al éxito de _handle (A-1)
+# 4. run() — delega en el bus en PostgreSQL (ADR-049)
 # ===========================================================================
+#
+# Confirmar solo si `_handle` tuvo éxito, la reclamación y el dead-letter los
+# hace `docuboto.core.bus` / `events.reclaim_stale` (probados contra Postgres
+# real en tests/document/integration/test_bus_eventos_integration.py). Aquí,
+# que el worker le entrega SU handler y SU callback de dead-letter.
 
 
 @pytest.mark.asyncio
-async def test_run_no_ackea_cuando_handle_lanza() -> None:
-    """Si _handle lanza, run() NO llama a xack — el mensaje permanece en PEL para reintento.
-
-    El xack incondicional (hallazgo A-1) perdía mensajes ante fallos transitorios
-    (BD caída, timeout). Con el fix, el ack ocurre SOLO si _handle completó con éxito.
-    """
+async def test_run_entrega_su_handler_y_su_dead_letter_al_bus() -> None:
     from signature.workers import document_consumer
 
-    fake_redis = AsyncMock()
-    msg_id = b"1234567890-0"
-    msg_data = _reclassified_fields()
+    consumir = AsyncMock()
+    with patch("signature.workers.document_consumer.bus.consumir", consumir):
+        await document_consumer.run()
 
-    # Primera llamada a xreadgroup entrega un mensaje; la segunda detiene el loop.
-    fake_redis.xreadgroup.side_effect = [
-        [(document_consumer.DOCUMENT_STREAM, [(msg_id, msg_data)])],
-        asyncio.CancelledError(),
-    ]
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch.object(
-            document_consumer, "_handle", AsyncMock(side_effect=RuntimeError("transient db error"))
-        ),
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    fake_redis.xack.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
-    """RedisTimeoutError en xreadgroup (block= expirado) no loguea WARNING ni hace sleep.
-
-    El timeout de block= 5000 ms es comportamiento normal de redis-py 8.x async cuando
-    no hay entradas nuevas en el stream.  El bucle debe continuar de inmediato, sin
-    registrar ningún mensaje de error y sin backoff innecesario.
-    """
-    from signature.workers import document_consumer
-
-    fake_redis = AsyncMock()
-
-    # Primera llamada: expiración normal del block → TimeoutError.
-    # Segunda llamada: CancelledError para salir del bucle.
-    fake_redis.xreadgroup.side_effect = [
-        redis_exc.TimeoutError("Timeout reading from redis:6379"),
-        asyncio.CancelledError(),
-    ]
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("asyncio.sleep", AsyncMock()) as mock_sleep,
-        patch.object(document_consumer, "logger") as mock_logger,
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    # El bucle se reanudó: xreadgroup fue invocado dos veces.
-    assert fake_redis.xreadgroup.call_count == 2
-
-    # Ningún WARNING del bucle general fue emitido por la expiración normal.
-    for call in mock_logger.warning.call_args_list:
-        assert "Error en el bucle" not in (call.args[0] if call.args else "")
-
-    # No se aplicó backoff (asyncio.sleep no fue llamado por la rama del timeout).
-    mock_sleep.assert_not_called()
-
-
-# ===========================================================================
-# 5. run() — reclaim sweep (Fase 1 dead-letter / reclamación)
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
-    """run() llama events.reclaim_stale cuando RECLAIM_INTERVAL ha transcurrido.
-
-    Se controla time.monotonic con valores sintéticos:
-      - Primera llamada (init _last_reclaim): 0.0
-      - Segunda llamada (comprobación 'now'): 31.0  (> RECLAIM_INTERVAL = 30.0)
-
-    Primera xreadgroup: mensajes vacíos (sin procesar) → reclaim se dispara.
-    Segunda xreadgroup: CancelledError → sale del bucle.
-    """
-    from signature.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],                       # primera iteración: sin mensajes nuevos
-        asyncio.CancelledError(), # segunda iteración: salida limpia
-    ]
-
-    mock_reclaim = AsyncMock(return_value=events.ReclaimStats())
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("signature.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("signature.workers.document_consumer.time") as mock_time,
-    ):
-        # Primer monotonic → 0.0 (init _last_reclaim)
-        # Segundo monotonic → 31.0 (reclaim check — supera el intervalo de 30 s)
-        mock_time.monotonic.side_effect = [0.0, 31.0]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    mock_reclaim.assert_awaited_once()
-    call_kwargs = mock_reclaim.await_args
-    assert call_kwargs.kwargs["deadletter_stream"] == document_consumer.DEADLETTER_STREAM
-    assert call_kwargs.kwargs["max_deliveries"] == 5
-    assert call_kwargs.kwargs["min_idle_ms"] == 60_000
-
-
-@pytest.mark.asyncio
-async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
-    """run() NO invoca reclaim_stale si el intervalo aún no ha transcurrido."""
-    from signature.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],
-        asyncio.CancelledError(),
-    ]
-
-    mock_reclaim = AsyncMock(return_value=events.ReclaimStats())
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("signature.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("signature.workers.document_consumer.time") as mock_time,
-    ):
-        # 0.0 → init; 5.0 → comprobación (solo 5 s < 30 s → sin barrido)
-        mock_time.monotonic.side_effect = [0.0, 5.0]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    mock_reclaim.assert_not_awaited()
+    consumir.assert_awaited_once()
+    kwargs = consumir.await_args.kwargs
+    assert kwargs["group"] == document_consumer.GROUP
+    assert kwargs["streams"] == ("orpycamcp.document.events",)
+    assert kwargs["handler"] is document_consumer._handle
+    assert kwargs["on_dead_letter"] is document_consumer._persist_dead_letter
+    assert kwargs["status_name"] == "signature"
 
 
 @pytest.mark.asyncio
@@ -642,144 +519,3 @@ async def test_persist_dead_letter_sin_tenant_slug_retorna_sin_error() -> None:
     # acquire_tenant nunca fue invocado — no hay schema destino.
     mock_acq.assert_not_called()
     mock_audit.append.assert_not_called()
-
-
-# ===========================================================================
-# 5. run() — reclaim sweep (Fase 1 dead-letter / reclamación)
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
-    """Un error en reclaim_stale no termina el loop; el bucle continúa y finaliza limpiamente."""
-    from signature.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],
-        asyncio.CancelledError(),
-    ]
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch(
-            "signature.workers.document_consumer.events.reclaim_stale",
-            AsyncMock(side_effect=RuntimeError("sweep db error")),
-        ),
-        patch("signature.workers.document_consumer.time") as mock_time,
-    ):
-        mock_time.monotonic.side_effect = [0.0, 31.0]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    # Loop survivió: xreadgroup fue invocado dos veces (no sólo una).
-    assert fake_redis.xreadgroup.call_count == 2
-
-
-# ===========================================================================
-# DLQ trim gate (ADR-021 Fase 4 — MVP-2)
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_run_invoca_trim_dlq_despues_del_intervalo() -> None:
-    """events.trim_deadletter es llamado con DEADLETTER_STREAM y max_age_ms correcto
-    cuando DLQ_TRIM_INTERVAL ha transcurrido.
-    """
-    from signature.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],
-        asyncio.CancelledError(),
-    ]
-
-    mock_trim = AsyncMock(return_value=0)
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("signature.workers.document_consumer.events.reclaim_stale", AsyncMock()),
-        patch("signature.workers.document_consumer.events.trim_deadletter", mock_trim),
-        patch("signature.workers.document_consumer.time") as mock_time,
-    ):
-        # First monotonic: init _last_reclaim=_last_dlq_trim=0.0
-        # Second monotonic: now=DLQ_TRIM_INTERVAL+1 → both reclaim and DLQ trim fire
-        mock_time.monotonic.side_effect = [
-            0.0,
-            document_consumer.DLQ_TRIM_INTERVAL + 1.0,
-        ]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    mock_trim.assert_awaited_once()
-    call = mock_trim.await_args
-    assert call.args[1] == document_consumer.DEADLETTER_STREAM
-    # max_age_ms must equal retention_dlq_days (default 30) × 86 400 000 ms/day.
-    assert call.kwargs["max_age_ms"] == 30 * 86_400_000
-
-
-@pytest.mark.asyncio
-async def test_run_no_invoca_trim_dlq_antes_del_intervalo() -> None:
-    """events.trim_deadletter NO se llama si DLQ_TRIM_INTERVAL aún no ha transcurrido."""
-    from signature.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],
-        asyncio.CancelledError(),
-    ]
-
-    mock_trim = AsyncMock(return_value=0)
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("signature.workers.document_consumer.events.reclaim_stale", AsyncMock()),
-        patch("signature.workers.document_consumer.events.trim_deadletter", mock_trim),
-        patch("signature.workers.document_consumer.time") as mock_time,
-    ):
-        # now=5.0 < DLQ_TRIM_INTERVAL (86400) → trim must NOT fire.
-        mock_time.monotonic.side_effect = [0.0, 5.0]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    mock_trim.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_run_fallo_en_trim_dlq_no_tumba_el_loop() -> None:
-    """Un error en trim_deadletter se registra como WARNING; el loop no crashea."""
-    from signature.workers import document_consumer
-
-    fake_redis = AsyncMock()
-    fake_redis.xreadgroup.side_effect = [
-        [],
-        asyncio.CancelledError(),
-    ]
-
-    with (
-        patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("signature.workers.document_consumer.events.reclaim_stale", AsyncMock()),
-        patch(
-            "signature.workers.document_consumer.events.trim_deadletter",
-            AsyncMock(side_effect=RuntimeError("redis conn error")),
-        ),
-        patch("signature.workers.document_consumer.time") as mock_time,
-        patch.object(document_consumer, "logger") as mock_logger,
-    ):
-        mock_time.monotonic.side_effect = [
-            0.0,
-            document_consumer.DLQ_TRIM_INTERVAL + 1.0,
-        ]
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    # Loop survived (xreadgroup called twice, second CancelledError exits cleanly).
-    assert fake_redis.xreadgroup.call_count == 2
-    warning_messages = [
-        call.args[0] for call in mock_logger.warning.call_args_list if call.args
-    ]
-    assert any("trim" in msg.lower() or "DLQ" in msg for msg in warning_messages)

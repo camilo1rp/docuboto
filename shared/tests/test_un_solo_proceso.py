@@ -140,7 +140,7 @@ def test_knowledge_service_no_arranca_la_ingesta() -> None:
 
 def test_el_lifespan_arranca_los_bucles_del_proceso() -> None:
     texto = (RAIZ / "services/docuboto/docuboto/core/lifespan.py").read_text(encoding="utf-8")
-    # The three Redis consumers that belong in this process.
+    # The consumers of the PostgreSQL bus that belong in this process (ADR-049).
     for marca in (
         "workflow_consumer",
         "stream_worker",
@@ -165,6 +165,19 @@ def test_no_queda_proceso_worker() -> None:
     assert not (RAIZ / "services/docuboto/docuboto/worker.py").exists()
     assert not (RAIZ / "services/docuboto/docuboto/core/lifespan_worker.py").exists()
     assert not (RAIZ / "infra" / "Dockerfile.worker").exists()
+
+
+def test_el_bus_y_el_antirreplay_viven_en_tablas() -> None:
+    """ADR-049: el evento nace en la tx del cambio; no hay outbox ni relé ni segundo almacén."""
+    assert create_table("eventos")
+    assert create_table("evento_entregas")
+    assert create_table("evento_ultimo_error")
+    assert create_table("altcha_usados")
+    app = RAIZ / "services" / "docuboto"
+    assert not (app / "document" / "services" / "outbox.py").exists()
+    assert not list(app.glob("*/core/re" "dis_client.py"))
+    antirrobots = ruta_src("document-service", "services/antirrobots.py").read_text(encoding="utf-8")
+    assert "altcha_usados" in antirrobots and "altcha:usado:" not in antirrobots
 
 
 def test_el_nonce_ppi_vive_en_tabla() -> None:
@@ -203,12 +216,12 @@ def test_postgres_va_en_la_version_actual_y_keycloak_no_esta() -> None:
         assert "keycloak" not in texto.lower(), "la identidad la emite la app (ADR-048)"
 
 
-#: Lo que un manifiesto puede declarar mientras ADR-049/050 no retiren Redis y
-#: el almacén de objetos. Keycloak ya salió (ADR-048).
+#: Lo que un manifiesto puede declarar mientras ADR-050 no retire el almacén de
+#: objetos. Keycloak salió con ADR-048 y el almacén de eventos con ADR-049.
 _PERMITIDOS = {
-    COMPOSE_DEV: {"migrate-docuboto", "postgres", "redis", "minio", "app", "frontend", "mailpit"},
+    COMPOSE_DEV: {"migrate-docuboto", "postgres", "minio", "app", "frontend", "mailpit"},
     RAIZ / "infra" / "docker-compose.prod.yml": {
-        "migrate-docuboto", "postgres", "redis", "minio", "app", "frontend", "edge",
+        "migrate-docuboto", "postgres", "minio", "app", "frontend", "edge",
     },
 }
 

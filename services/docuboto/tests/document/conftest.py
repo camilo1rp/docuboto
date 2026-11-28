@@ -20,6 +20,7 @@ pop the override explicitly.
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, date, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,7 +31,7 @@ from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import instalar_inyector
 
 from docuboto.config import document as settings
-from document.core.dependencies import get_public_tenant_conn, get_redis, get_tenant_client
+from document.core.dependencies import get_public_tenant_conn, get_tenant_client
 from document.services.ventanilla_service import VentanillaService
 from tenant.api import TenantUnavailableError
 from tests.document.app import app
@@ -119,12 +120,6 @@ def _make_mock_conn() -> AsyncMock:
     # llamada síncrona que devuelve un context manager asíncrono.
     conn.transaction = MagicMock(return_value=AsyncMock())
     return conn
-
-
-def _make_fake_redis() -> AsyncMock:
-    redis = AsyncMock()
-    redis.xadd.return_value = b"1-0"
-    return redis
 
 
 def make_radicado_record(
@@ -224,10 +219,9 @@ def _override_conn(mock_conn: AsyncMock, fake_client: FakeTenantClient) -> None:
     app.dependency_overrides[get_tenant_conn] = _dep
     app.dependency_overrides[get_db_conn] = _dep
     app.dependency_overrides[get_public_tenant_conn] = _dep
-    # El endpoint de creación depende de get_tenant_client y get_redis (sin
-    # BD de tenant ni redis reales); se sustituyen por dobles.
+    # El endpoint de creación depende de get_tenant_client (sin BD de tenant
+    # real); se sustituye por un doble.
     app.dependency_overrides[get_tenant_client] = lambda: fake_client
-    app.dependency_overrides[get_redis] = _make_fake_redis
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -268,33 +262,61 @@ async def client_with_deps() -> (
     app.dependency_overrides.clear()
 
 
-@pytest_asyncio.fixture(scope="function")
-async def client_with_redis() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, AsyncMock], None]:
-    """Yields (client, mock_conn, fake_redis) para tests de emisión de eventos."""
-    mock_conn = _make_mock_conn()
-    fake_redis = _make_fake_redis()
-    _override_conn(mock_conn, FakeTenantClient())
-    app.dependency_overrides[get_redis] = lambda: fake_redis
+class EventosPublicados(list):
+    """Lo que `events.publish` habría insertado: `(conn, stream, sobre)` por evento."""
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        yield ac, mock_conn, fake_redis
+    def de_tipo(self, event_type: str) -> list[dict[str, Any]]:
+        return [e for _c, _s, e in self if e["event_type"] == event_type]
 
-    app.dependency_overrides.clear()
+    def tipos(self) -> list[str]:
+        return [e["event_type"] for _c, _s, e in self]
+
+    def ultimo_plano(self) -> tuple[str, dict[str, str]]:
+        """`(stream, campos)` del último evento, en la forma plana que guarda `eventos.sobre`."""
+        from orpycamcp_common import events
+
+        _conn, stream, event = self[-1]
+        return stream, events.to_fields(event)
 
 
 @pytest.fixture(autouse=True)
-def _reloj_de_la_base_fijo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Las suites con `conn` simulado encadenan `fetchval` en un orden fijo; el reloj de la
-    BASE que usa el outbox (`outbox._reloj_bd`) no debe consumir esa cadena. En el carril de
-    integración (Postgres real) NO se sustituye: ahí se prueba el reloj de verdad."""
+def eventos_publicados(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> EventosPublicados:
+    """Las suites con `conn` simulado encadenan `fetchval` en un orden fijo: publicar
+    (el reloj de la BASE y el INSERT en `eventos`) no debe consumir esa cadena. Se
+    graba lo publicado, con la conexión con que se publicó, para que la prueba
+    compruebe que fue la del acto. En el carril de integración (Postgres real) NO se
+    sustituye: ahí se prueba la tabla de verdad."""
+    grabados = EventosPublicados()
     if "integration" in request.node.nodeid:
-        return
-    from document.services import outbox
+        return grabados
+    from orpycamcp_common import events
 
-    async def _fijo(_conn: object) -> datetime:
+    async def _reloj(_conn: object) -> datetime:
         return datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
 
-    monkeypatch.setattr(outbox, "_reloj_bd", _fijo)
+    async def _publicar(conn: object, stream: str, event: dict[str, Any]) -> int:
+        grabados.append((conn, stream, event))
+        return len(grabados)
+
+    monkeypatch.setattr(events, "reloj_bd", _reloj)
+    monkeypatch.setattr(events, "publish", _publicar)
+    return grabados
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client_with_eventos(
+    eventos_publicados: EventosPublicados,
+) -> AsyncGenerator[tuple[AsyncClient, AsyncMock, EventosPublicados], None]:
+    """Yields (client, mock_conn, eventos_publicados) para tests de emisión de eventos."""
+    mock_conn = _make_mock_conn()
+    _override_conn(mock_conn, FakeTenantClient())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac, mock_conn, eventos_publicados
+
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture(autouse=True)

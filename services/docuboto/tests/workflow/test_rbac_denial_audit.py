@@ -38,7 +38,7 @@ def _audit_insert_calls(mock_conn: AsyncMock) -> list:
 
 @pytest.mark.asyncio
 async def test_denial_of_identified_user_is_audited(client_with_conn) -> None:
-    client, mock_conn, _redis = client_with_conn
+    client, mock_conn, _eventos = client_with_conn
     mock_conn.fetchval.return_value = None  # check_permission → denegado
 
     resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
@@ -61,7 +61,7 @@ async def test_denial_of_identified_user_is_audited(client_with_conn) -> None:
 async def test_denial_without_identity_is_not_audited(client_with_conn) -> None:
     """Sonda anónima (sin X-User-Id): sigue siendo 403, pero NO deja traza — evita
     que el rate-limiter y el escaneo no autenticado contaminen la cadena de hash."""
-    client, mock_conn, _redis = client_with_conn
+    client, mock_conn, _eventos = client_with_conn
     mock_conn.fetchval.return_value = True  # aunque "hubiera" permiso, sin identidad no aplica
 
     resp = await client.get(
@@ -76,7 +76,7 @@ async def test_denial_without_identity_is_not_audited(client_with_conn) -> None:
 async def test_denial_survives_audit_failure(client_with_conn) -> None:
     """Best-effort real: si append_denial explota, la respuesta sigue siendo 403,
     nunca 500."""
-    client, mock_conn, _redis = client_with_conn
+    client, mock_conn, _eventos = client_with_conn
     mock_conn.fetchval.return_value = None  # check_permission → denegado
 
     with patch(

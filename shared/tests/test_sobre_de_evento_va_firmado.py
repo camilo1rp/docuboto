@@ -10,7 +10,7 @@
 """Un sobre sin firma es una orden anónima.
 
 Los consumidores toman la entidad destino del propio sobre y escriben en su
-schema. Sin prueba de origen, quien pueda escribir en Redis actúa como el
+schema. Sin prueba de origen, quien pueda escribir en el bus actúa como el
 productor legítimo sobre cualquier entidad alojada: publicar una reclasificación
 a la baja bastaba para bajar de nivel un radicado reservado ajeno.
 """

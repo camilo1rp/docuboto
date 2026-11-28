@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -40,10 +40,7 @@ async def ctx(tenant_ctx):
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     emit = AsyncMock()
-    with (
-        patch("workflow.services.workflow_service.events.emit", emit),
-        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
-    ):
+    with patch("workflow.services.workflow_service.events.emit", emit):
         yield WorkflowService(conn, slug), conn, emit
 
 

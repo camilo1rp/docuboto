@@ -7,16 +7,24 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Consumidores de Redis Streams y DLQ compartida (tanda T9).
+"""Consumidores del bus de eventos y DLQ compartida (tanda T9, ADR-049).
 
-AREA-10-06  nombre de consumidor por réplica, no un literal.
+AREA-10-06  dos consumidores del mismo grupo no toman el mismo evento: la toma es
+            una fila por (grupo, evento) con ON CONFLICT, y la reclamación usa
+            SKIP LOCKED (antes: nombre de consumidor por réplica para XCLAIM).
 AREA-10-07  todo `ON CONFLICT` sobre `evento_dead_letter` incluye `origin_group`.
 AREA-10-09  el dead-letter huérfano lleva la causa, no un texto vacío.
-AREA-13-12  el último barrido y el tamaño de la DLQ son visibles.
+AREA-13-12  el último barrido y los dead-letters pendientes son visibles.
+
+El comportamiento contra la tabla de verdad (la quinta entrega aparca con su
+error, el huérfano dice que lo desconoce, sin rastro durable no se confirma) lo
+prueba `services/docuboto/tests/document/integration/test_bus_eventos_integration.py`.
+Aquí queda lo que se comprueba sin base: el contrato del código y el cableado.
 """
 
 from __future__ import annotations
 
+import inspect
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -45,35 +53,23 @@ def _fuentes(patron: str):
 # ---------------------------------------------------------------------------
 
 
-def test_consumer_name_distingue_replicas(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HOSTNAME", "a")
-    a = events.consumer_name("x")
-    monkeypatch.setenv("HOSTNAME", "b")
-    b = events.consumer_name("x")
-    assert a != b
-    assert a.startswith("x-") and b.startswith("x-")
+def test_tomar_un_evento_es_una_fila_por_grupo_con_on_conflict() -> None:
+    fuente = inspect.getsource(events.leer)
+    assert "INSERT INTO evento_entregas" in fuente
+    assert "ON CONFLICT DO NOTHING" in fuente
 
 
-def test_consumer_name_sin_hostname_cae_al_del_equipo(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HOSTNAME", raising=False)
-    assert events.consumer_name("svc").startswith("svc-") and len(events.consumer_name("svc")) > 4
+def test_la_reclamacion_no_toma_lo_que_otro_barrido_ya_tiene() -> None:
+    fuente = inspect.getsource(events._reclaim_sweep)
+    assert "FOR UPDATE SKIP LOCKED" in fuente
 
 
-_LITERAL = re.compile(r"""^CONSUMER\s*=\s*["'][^"']*["']""", re.M)
-
-
-def test_ningun_worker_fija_el_nombre_de_consumidor_con_un_literal() -> None:
+def test_ningun_worker_conserva_un_nombre_de_consumidor() -> None:
+    """Sin XCLAIM no hay dueño por réplica: un `CONSUMER` que reaparezca es código muerto."""
     workers = _fuentes("*/app/workers/*.py")
     assert workers, "el censo no encontró workers: la ruta cambió"
-    literales = [str(w.relative_to(RAIZ)) for w in workers if _LITERAL.search(w.read_text())]
-    assert not literales, f"CONSUMER fijo (rompe XCLAIM entre réplicas): {literales}"
-    sin_derivar = [
-        str(w.relative_to(RAIZ))
-        for w in workers
-        if re.search(r"^CONSUMER\s*=", w.read_text(), re.M)
-        and "events.consumer_name(" not in w.read_text()
-    ]
-    assert not sin_derivar, f"CONSUMER sin events.consumer_name: {sin_derivar}"
+    con_nombre = [str(w.relative_to(RAIZ)) for w in workers if re.search(r"^CONSUMER\s*=", w.read_text(), re.M)]
+    assert not con_nombre, con_nombre
 
 
 # ---------------------------------------------------------------------------
@@ -107,138 +103,53 @@ def test_la_pk_de_la_dlq_es_por_grupo() -> None:
 
 
 # ---------------------------------------------------------------------------
-# AREA-10-09 / AREA-13-12 — doble de Redis con estado
+# AREA-10-09 / AREA-13-12
 # ---------------------------------------------------------------------------
 
 
-class _FakeRedis:
-    def __init__(self, pending: list[dict], fields) -> None:
-        self.pending = pending
-        self.fields = fields
-        self.hashes: dict[str, dict[str, str]] = {}
-        self.xadded: list[dict] = []
-        self.acked: list[str] = []
-        self.expired: list[str] = []
-
-    async def xpending_range(self, *a, **k):
-        return self.pending
-
-    async def xclaim(self, stream, group, consumer, min_idle, ids):
-        return [(ids[0], self.fields)]
-
-    async def xadd(self, stream, fields):
-        self.xadded.append(fields)
-        return "1-0"
-
-    async def xack(self, stream, group, msg_id):
-        self.acked.append(msg_id)
-        return 1
-
-    async def hset(self, key, field, value):
-        self.hashes.setdefault(key, {})[field] = value
-
-    async def expire(self, key, ttl):
-        self.expired.append(key)
-
-    async def hget(self, key, field):
-        return self.hashes.get(key, {}).get(field)
-
-    async def hdel(self, key, field):
-        self.hashes.get(key, {}).pop(field, None)
-
-
-def _entrada(msg_id: str, veces: int) -> dict:
-    return {"message_id": msg_id, "consumer": "otro", "time_since_delivered": 70_000,
-            "times_delivered": veces}
-
-
-def _campos() -> dict:
-    return events.to_fields(events.build_event("x.y", tenant_slug="demo", payload={"k": 1}))
-
-
-async def _barrer(redis, handler, **kw):
-    return await events.reclaim_stale(
-        redis, "s", "g", "c", handler=handler, min_idle_ms=60_000, max_deliveries=5,
-        deadletter_stream="dl", **kw,
-    )
-
-
-async def test_el_huerfano_lleva_el_ultimo_error_del_fallo_previo() -> None:
-    campos = _campos()
-    handler = AsyncMock(side_effect=RuntimeError("embedding caído"))
-    # Barrido 1: el reproceso falla por debajo del umbral y deja constancia del error.
-    r = _FakeRedis([_entrada("1-1", 2)], campos)
-    stats = await _barrer(r, handler)
-    assert stats.reprocessed_fail == 1 and not r.xadded
-    assert "embedding caído" in r.hashes["orpycamcp:g:lasterr"]["1-1"]
-    # Barrido 2: el mensaje ya está en el umbral y no hay intento fresco (huérfano).
-    r.pending = [_entrada("1-1", 5)]
-    stats = await _barrer(r, handler, on_dead_letter=AsyncMock())
-    assert stats.dead_lettered == 1
-    assert "embedding caído" in r.xadded[0]["dead_letter_last_error"]
-    assert "1-1" not in r.hashes["orpycamcp:g:lasterr"], "el error no se olvida tras aparcar"
-
-
-async def test_el_huerfano_sin_error_previo_dice_que_lo_desconoce_y_no_vacio() -> None:
-    r = _FakeRedis([_entrada("2-1", 5)], _campos())
-    await _barrer(r, AsyncMock(), on_dead_letter=AsyncMock())
-    ultimo = r.xadded[0]["dead_letter_last_error"]
-    assert ultimo and ultimo == events.LASTERR_DESCONOCIDO
-
-
 async def test_record_failure_es_best_effort() -> None:
-    redis = AsyncMock()
-    redis.hset.side_effect = ConnectionError("redis caído")
-    await events.record_failure(redis, "g", "1-1", RuntimeError("x"))  # no lanza
+    conn = AsyncMock()
+    conn.execute.side_effect = ConnectionError("base caída")
+    await events.record_failure(conn, "g", "e-1", RuntimeError("x"))  # no lanza
 
 
-async def test_el_barrido_queda_en_consumer_status() -> None:
+async def test_el_huerfano_sin_error_recordado_dice_que_lo_desconoce() -> None:
+    conn = AsyncMock()
+    conn.fetchval.return_value = None
+    assert await events._recall_failure(conn, "g", "e-1") == events.LASTERR_DESCONOCIDO
+    conn.fetchval.side_effect = ConnectionError("x")
+    assert await events._recall_failure(conn, "g", "e-1") == events.LASTERR_DESCONOCIDO
+
+
+def test_el_barrido_queda_en_consumer_status() -> None:
     events._estado_consumidores.pop("t9", None)
-    r = _FakeRedis([_entrada("3-1", 5)], _campos())
-    await _barrer(r, AsyncMock(), on_dead_letter=AsyncMock(), status_name="t9")
+    events._record_sweep("t9", events.ReclaimStats(dead_lettered=1))
     estado = events.consumer_status()["t9"]
     assert estado["dead_lettered"] == 1
     assert estado["dead_lettered_total"] == 1
     assert estado["ultimo_barrido"]
     # Un segundo barrido sin nada que aparcar no borra el acumulado.
-    r.pending = []
-    await _barrer(r, AsyncMock(), status_name="t9")
+    events._record_sweep("t9", events.ReclaimStats())
     estado = events.consumer_status()["t9"]
     assert estado["dead_lettered"] == 0 and estado["dead_lettered_total"] == 1
     events._estado_consumidores.pop("t9", None)
 
 
-async def test_todo_worker_publica_sus_estadisticas_de_barrido() -> None:
-    workers = _fuentes("*/app/workers/*.py")
-    for w in workers:
-        t = w.read_text()
-        if "events.reclaim_stale(" in t:
-            assert "status_name=" in t, f"{w.relative_to(RAIZ)}: el ReclaimStats se descarta"
-
-
-async def test_la_sonda_marca_degradada_una_dlq_con_entradas() -> None:
-    redis = AsyncMock()
-    redis.xlen.return_value = 3
-    informe = await health_common.consumer_report(redis, {"dead_lettered": 0}, "dl")
+def test_la_sonda_marca_degradada_una_dlq_con_pendientes() -> None:
+    informe = health_common.consumer_report({"dead_lettered": 0}, 3)
     assert informe["dead_letter"] == "degraded"
-    assert informe["detalle"]["dead_letter_stream_len"] == 3
+    assert informe["detalle"]["dead_letter_pendientes"] == 3
 
 
-async def test_la_sonda_marca_ok_con_dlq_vacia_y_degradada_si_el_barrido_aparco() -> None:
-    redis = AsyncMock()
-    redis.xlen.return_value = 0
-    assert (await health_common.consumer_report(redis, {}, "dl"))["dead_letter"] == "ok"
-    assert (
-        await health_common.consumer_report(redis, {"dead_lettered": 2}, "dl")
-    )["dead_letter"] == "degraded"
+def test_la_sonda_marca_ok_con_dlq_vacia_y_degradada_si_el_barrido_aparco() -> None:
+    assert health_common.consumer_report({}, 0)["dead_letter"] == "ok"
+    assert health_common.consumer_report({"dead_lettered": 2}, 0)["dead_letter"] == "degraded"
 
 
-async def test_un_xlen_que_falla_no_tumba_la_sonda_ni_la_degrada() -> None:
-    redis = AsyncMock()
-    redis.xlen.side_effect = ConnectionError("x")
-    informe = await health_common.consumer_report(redis, {}, "dl")
+def test_un_conteo_que_falla_no_degrada_la_sonda() -> None:
+    informe = health_common.consumer_report({}, None)
     assert informe["dead_letter"] == "ok"
-    assert informe["detalle"]["dead_letter_stream_len"] is None
+    assert informe["detalle"]["dead_letter_pendientes"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -248,40 +159,35 @@ async def test_un_xlen_que_falla_no_tumba_la_sonda_ni_la_degrada() -> None:
 # ---------------------------------------------------------------------------
 
 _NOMBRES = {
-    "workflow-service": "workflow",
-    "signature-service": "signature",
-    "notification-service": "notification",
+    "workflow-service": ("workflow", ("workflow", "document_consumer.py")),
+    "signature-service": ("signature", ("signature", "document_consumer.py")),
+    "notification-service": ("notification", ("notification", "stream_worker.py")),
+    "intelligence-gateway": ("intelligence-gateway", ("knowledge", "intelligence_consumer.py")),
 }
 
 
-def _worker(servicio: str) -> Path:
-    ws = [w for w in _fuentes(f"docuboto/{_NOMBRES[servicio]}/workers/*.py") if "events.reclaim_stale(" in w.read_text()]
-    assert len(ws) == 1, f"{servicio}: se esperaba exactamente un worker con reclaim_stale, hay {ws}"
-    return ws[0]
+def test_el_bucle_del_bus_registra_el_error_y_publica_el_barrido() -> None:
+    bus = ruta_src("docuboto", "core", "bus.py").read_text()
+    assert "events.record_failure(conn, group, event_id, exc)" in bus, (
+        "el except del bucle no llama record_failure; el huérfano se aparcaría sin causa"
+    )
+    assert re.search(r"events\.reclaim_stale\([^)]*status_name=status_name", bus, re.S)
 
 
 @pytest.mark.parametrize("servicio", sorted(_NOMBRES))
-def test_el_worker_registra_el_error_y_usa_su_nombre_por_replica(servicio: str) -> None:
-    t = _worker(servicio).read_text()
-    assert "events.record_failure(redis, GROUP, msg_id, exc)" in t, (
-        f"{servicio}: el except del bucle no llama record_failure; el huérfano se aparca sin causa"
-    )
-    # el nombre por réplica debe llegar al XREADGROUP *y* al XCLAIM de reclaim_stale
-    assert re.search(r"xreadgroup\(\s*GROUP,\s*CONSUMER\b", t)
-    assert re.search(r"events\.reclaim_stale\([^)]*?\bCONSUMER,", t, re.S)
-
-
-@pytest.mark.parametrize("servicio,nombre", sorted(_NOMBRES.items()))
-def test_el_nombre_supervisado_coincide_en_worker_lifespan_y_health(servicio: str, nombre: str) -> None:
+def test_el_nombre_supervisado_coincide_en_worker_lifespan_y_health(servicio: str) -> None:
     """Si difieren, /health/ready nunca encuentra el estado y la DLQ deja de verse sin error.
 
     Un proceso (ADR-047): el lifespan de la app los arranca y su `/health` los informa.
     """
-    assert f'status_name="{nombre}"' in _worker(servicio).read_text()
+    nombre, (dominio, archivo) = _NOMBRES[servicio]
+    worker = ruta_src(dominio, "workers", archivo).read_text()
+    assert "bus.consumir(" in worker and "on_dead_letter=_persist_dead_letter" in worker
+    assert f'status_name="{nombre}"' in worker
     lifespan = ruta_src("docuboto", "core", "lifespan.py").read_text()
     assert f'tareas.start("{nombre}", ' in lifespan and "supervised=True" in lifespan
     health = ruta_src("docuboto", "routers", "health.py").read_text()
-    assert f'"{nombre}": DLQ_' in health
+    assert f'"{nombre}": GRUPO_' in health
     assert "health_common.consumer_report(" in health
 
 

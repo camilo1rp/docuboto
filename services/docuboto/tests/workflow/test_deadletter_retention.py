@@ -12,7 +12,7 @@
 Mirror of signature-service/tests/test_deadletter_retention.py; identical
 invariants and structure, adjusted for the workflow-service package paths.
 
-All tests are pure-unit (no real DB or Redis).
+All tests are pure-unit (no real DB).
 
 Invariants verified:
   - purge_terminal: deletes 'resolved' and 'discarded' rows past the grace period.
@@ -21,13 +21,12 @@ Invariants verified:
   - purge_terminal: raises ValueError for days < 1 (fail-closed guard).
   - purge_deadletter: iterates all active tenants and aggregates counts.
   - purge_deadletter: a failure in one tenant does not abort the others.
-  - Worker cadence: run_once is called after DLQ_TRIM_INTERVAL elapses.
-  - Worker cadence: a run_once failure logs WARNING and does not crash the loop.
+  - Worker wiring: run_once is the consumer's periodic job on the bus (ADR-049);
+    the bus isolates its failures (docuboto.core.bus.consumir).
 """
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -225,88 +224,16 @@ async def test_run_once_uses_configured_days() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Worker cadence gate tests
+# Worker wiring
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_worker_calls_run_once_after_interval() -> None:
-    """After DLQ_TRIM_INTERVAL seconds the worker calls deadletter_retention.run_once."""
+async def test_worker_registra_run_once_como_trabajo_periodico() -> None:
     from workflow.workers import document_consumer
 
-    redis_mock = AsyncMock()
-    # Iteration 1: xreadgroup returns nothing — the loop body is a no-op except the
-    # cadence gates (which fire run_once).  Iteration 2: raise CancelledError to break
-    # the loop deterministically.  Using a finite side_effect (instead of
-    # return_value=[]) is mandatory: the loop has no sleep on its happy path, so a
-    # mock that always returns instantly spins at full CPU and the AsyncMock call
-    # history grows without bound — an external task.cancel() never wins the race
-    # and the process exhausts RAM (observed as exit 137 in CI). Mirrors the fix in
-    # signature-service/tests/test_deadletter_retention.py.
-    redis_mock.xreadgroup.side_effect = [[], asyncio.CancelledError()]
-
-    run_once_called = asyncio.Event()
-
-    async def fake_run_once() -> None:
-        run_once_called.set()
-
-    # We want the first iteration to trigger the gate immediately by making
-    # `now - _last_dlq_trim` appear to exceed DLQ_TRIM_INTERVAL.
-    original_trim_interval = document_consumer.DLQ_TRIM_INTERVAL
-    document_consumer.DLQ_TRIM_INTERVAL = 0.0  # trigger immediately
-
-    with (
-        patch("workflow.workers.document_consumer.get_redis", return_value=redis_mock),
-        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("workflow.workers.document_consumer.events.trim_deadletter", AsyncMock()),
-        patch(
-            "workflow.workers.document_consumer.deadletter_retention.run_once",
-            side_effect=fake_run_once,
-        ),
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    document_consumer.DLQ_TRIM_INTERVAL = original_trim_interval
-    assert run_once_called.is_set(), "deadletter_retention.run_once was not called"
-
-
-@pytest.mark.asyncio
-async def test_worker_run_once_failure_does_not_crash_loop() -> None:
-    """A run_once exception logs WARNING and the loop continues (does not propagate)."""
-    from workflow.workers import document_consumer
-
-    redis_mock = AsyncMock()
-    # Three iterations: (1) run_once raises and is swallowed, (2) run_once succeeds and
-    # signals the loop survived, (3) CancelledError breaks the loop.  A finite
-    # side_effect keeps the loop bounded — see the note in
-    # test_worker_calls_run_once_after_interval for why return_value=[] is unsafe here.
-    redis_mock.xreadgroup.side_effect = [[], [], asyncio.CancelledError()]
-
-    loop_continued = asyncio.Event()
-    call_count = 0
-
-    async def fake_run_once_then_continue() -> None:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise RuntimeError("transient DB failure")
-        # Second call signals the loop is still alive after the failure.
-        loop_continued.set()
-
-    original_trim_interval = document_consumer.DLQ_TRIM_INTERVAL
-    document_consumer.DLQ_TRIM_INTERVAL = 0.0
-
-    with (
-        patch("workflow.workers.document_consumer.get_redis", return_value=redis_mock),
-        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("workflow.workers.document_consumer.events.trim_deadletter", AsyncMock()),
-        patch(
-            "workflow.workers.document_consumer.deadletter_retention.run_once",
-            side_effect=fake_run_once_then_continue,
-        ),
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await document_consumer.run()
-
-    document_consumer.DLQ_TRIM_INTERVAL = original_trim_interval
-    assert loop_continued.is_set(), "Loop did not continue after run_once failure"
+    consumir = AsyncMock()
+    with patch.object(document_consumer.bus, "consumir", consumir):
+        await document_consumer.run()
+    kw = consumir.await_args.kwargs
+    assert kw["periodico"] is deadletter_retention.run_once
+    assert kw["intervalo_periodico"] == document_consumer.DLQ_RETENTION_INTERVAL

@@ -7,11 +7,11 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""B10 (ítem 1, productor): los eventos `document.envio.*` salen por el OUTBOX.
+"""B10 (ítem 1, productor): los eventos `document.envio.*` nacen en la tx del cambio.
 
-Antes la transición del callback se publicaba a Redis tras el commit, tragándose el
-fallo (con Redis caído la devolución se perdía), y la transición MANUAL no emitía nada.
-Ahora ambas dejan la fila en `eventos_salientes` DENTRO de la transacción del cambio.
+Antes la transición del callback se publicaba tras el commit, tragándose el fallo (la
+devolución se perdía), y la transición MANUAL no emitía nada. Ahora ambas publican en
+`eventos` DENTRO de la transacción del cambio (ADR-049).
 
 Mutaciones verificadas al entregar:
 - quitar el `_encolar_estado` de `update_estado` → cae `test_la_devolucion_manual_encola_el_evento_en_la_misma_tx`;
@@ -30,7 +30,7 @@ import pytest
 from document.schemas.postal import PostalCallbackPayload, ShipmentStatusUpdate
 from document.services import postal_service
 from document.services.postal_service import PostalService
-from tests.document.conftest import _make_fake_redis, _make_mock_conn
+from tests.document.conftest import _make_mock_conn
 
 NOW = datetime.now(tz=UTC)
 
@@ -83,7 +83,7 @@ def _espiar_encolado(tx: _TxEspia) -> tuple[AsyncMock, list[bool]]:
 
     async def _encolar(conn, **kw):
         vistos.append(tx.abierta)
-        return {"stream": kw["stream"], "event": {"event_id": "e", "event_type": kw["event_type"]}}
+        return {"event_id": "e", "event_type": kw["event_type"]}
 
     return AsyncMock(side_effect=_encolar), vistos
 
@@ -99,11 +99,9 @@ async def test_la_devolucion_manual_encola_el_evento_en_la_misma_tx() -> None:
         _row(estado="devuelto", id=actual["id"], radicado_id=actual["radicado_id"], guia=actual["guia"]),
     ]
     encolar, vistos = _espiar_encolado(tx)
-    redis = _make_fake_redis()
-    svc = PostalService(conn, redis=redis, tenant_slug="demo")
+    svc = PostalService(conn, tenant_slug="demo")
     with (
-        patch.object(postal_service.outbox, "encolar", encolar),
-        patch.object(postal_service.outbox, "enviar", AsyncMock(return_value=True)) as enviar,
+        patch.object(postal_service.events, "emit", encolar),
         patch.object(postal_service.audit, "append", AsyncMock()),
     ):
         await svc.update_estado(
@@ -113,8 +111,7 @@ async def test_la_devolucion_manual_encola_el_evento_en_la_misma_tx() -> None:
     assert kw["event_type"] == "document.envio.devuelto"
     assert kw["dedup_key"] == f"demo:{actual['guia']}:devuelto"
     assert kw["payload"]["estado"] == "devuelto" and kw["payload"]["radicado_id"] == str(actual["radicado_id"])
-    assert vistos == [True], "el evento debe encolarse DENTRO de la transacción del cambio"
-    enviar.assert_awaited_once()  # camino rápido tras el commit
+    assert vistos == [True], "el evento debe publicarse DENTRO de la transacción del cambio"
 
 
 @pytest.mark.asyncio
@@ -126,40 +123,18 @@ async def test_el_callback_encola_dentro_de_la_tx() -> None:
     conn.fetchval.side_effect = [uuid.uuid4()]  # delivery_id
     conn.fetchrow.side_effect = [envio, _row(estado="devuelto")]
     encolar, vistos = _espiar_encolado(tx)
-    svc = PostalService(conn, redis=_make_fake_redis(), tenant_slug="demo")
+    svc = PostalService(conn, tenant_slug="demo")
     payload = PostalCallbackPayload(
         operador="4-72", guia=envio["guia"], estado_operador="DEVUELTO", event_id="evt-d1"
     )
     with (
-        patch.object(postal_service.outbox, "encolar", encolar),
-        patch.object(postal_service.outbox, "enviar", AsyncMock(return_value=True)),
+        patch.object(postal_service.events, "emit", encolar),
         patch.object(postal_service.audit, "append", AsyncMock()),
         patch.object(postal_service, "mapear_estado", return_value="devuelto"),
     ):
         res = await svc.aplicar_autenticado(
             payload, actor="postal:4-72", ocurrido_at=None, diferido_id=None
         )
-        await svc.enviar_pendientes()
     assert res.status == "applied"
     assert vistos == [True]
     assert encolar.await_args.kwargs["event_type"] == "document.envio.devuelto"
-
-
-@pytest.mark.asyncio
-async def test_con_redis_caido_el_callback_responde_y_el_evento_queda_pendiente() -> None:
-    """El camino rápido nunca lanza: la fila del outbox queda para el relé del barrido."""
-    conn = _make_mock_conn()
-    redis = _make_fake_redis()
-    redis.xadd.side_effect = ConnectionError("redis caído")
-    svc = PostalService(conn, redis=redis, tenant_slug="demo")
-    svc._por_enviar.append(
-        {
-            "stream": "orpycamcp.document.events",
-            "event": {"event_id": "e1", "event_type": "document.envio.devuelto"},
-        }
-    )
-    with patch.object(postal_service.outbox.events, "publish", AsyncMock(side_effect=ConnectionError("x"))):
-        await svc.enviar_pendientes()  # no lanza
-    assert svc._por_enviar == []
-    # No se marcó `enviado_at`: el UPDATE solo ocurre tras publicar con éxito.
-    conn.execute.assert_not_awaited()

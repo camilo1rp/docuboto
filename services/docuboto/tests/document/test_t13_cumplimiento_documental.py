@@ -363,7 +363,7 @@ async def test_el_estado_de_la_ventanilla_dice_si_esta_habilitada(
         "dependencia_receptora": receptora,
         "tipos_admitidos": tipos,
         "politica_publicada": True,  # el doble de tenant-service la trae vigente
-        "antirrobots_disponible": True,  # clave de pruebas + el doble de Redis responde al PING
+        "antirrobots_disponible": True,  # clave de pruebas configurada
         "contacto": None,  # la entidad de prueba no declaró ningún parámetro `entidad_*`
     }
 
@@ -440,7 +440,6 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
     from tests.document.app import app
     from tests.document.conftest import (
         FakeTenantClient,
-        _make_fake_redis,
         _make_mock_conn,
         _override_conn,
     )
@@ -453,9 +452,6 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
     async def _correr(caduca: datetime) -> int:
         conn = _make_mock_conn()
         _override_conn(conn, FakeTenantClient())
-        from document.core.dependencies import get_redis
-
-        app.dependency_overrides[get_redis] = lambda: _make_fake_redis()
         app.state.db_pool = _FakePool(conn)
         conn.fetchval.side_effect = [uuid.uuid4(), None]
         conn.fetchrow.side_effect = [
@@ -814,7 +810,7 @@ async def test_entregado_sin_acuse_es_422_por_la_api(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_editar_el_texto_emite_contenido_cambiado_con_el_nuevo_hash() -> None:
+async def test_editar_el_texto_emite_contenido_cambiado_con_el_nuevo_hash(eventos_publicados) -> None:
     from document.schemas.borrador import BorradorUpdate
     from document.services.borrador_service import BorradorService
 
@@ -823,10 +819,8 @@ async def test_editar_el_texto_emite_contenido_cambiado_con_el_nuevo_hash() -> N
     conn.transaction = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(
         return_value=AsyncMock()
     )
-    redis = AsyncMock()
-    redis.xadd.return_value = b"1-0"
     sig = AsyncMock()
-    svc = BorradorService(conn, "demo", signature_api=sig, redis=redis)
+    svc = BorradorService(conn, "demo", signature_api=sig)
     antes = {"estado": "borrador", "radicado_padre_id": None, "cuerpo_sha256": "a" * 64}
     despues = {
         "id": bid,
@@ -841,19 +835,16 @@ async def test_editar_el_texto_emite_contenido_cambiado_con_el_nuevo_hash() -> N
     with patch("document.services.borrador_service._bo", lambda r: r):
         await svc.editar(bid, BorradorUpdate(cuerpo="<p>nuevo</p>"), max_clearance=3, actor=uuid.uuid4())
 
-    redis.xadd.assert_awaited_once()
-    campos = redis.xadd.await_args.args[1]
-    assert campos[b"event_type" if b"event_type" in campos else "event_type"] in (
-        b"documento.contenido_cambiado",
-        "documento.contenido_cambiado",
-    )
-    assert "b" * 64 in repr(campos)
-    assert '"nivel_seguridad": 2' in repr(campos)  # declara el nivel (webhook de notification)
+    (en_conn, _stream, evento), = eventos_publicados
+    assert en_conn is conn  # en la transacción de la edición (ADR-049)
+    assert evento["event_type"] == "documento.contenido_cambiado"
+    assert evento["payload"]["cuerpo_sha256"] == "b" * 64
+    assert evento["payload"]["nivel_seguridad"] == 2  # declara el nivel (webhook de notification)
     sig.invalidar_circuitos.assert_awaited_once()  # la garantía síncrona sigue en pie
 
 
 @pytest.mark.asyncio
-async def test_cambiar_solo_el_asunto_no_emite_ni_invalida() -> None:
+async def test_cambiar_solo_el_asunto_no_emite_ni_invalida(eventos_publicados) -> None:
     from document.schemas.borrador import BorradorUpdate
     from document.services.borrador_service import BorradorService
 
@@ -862,9 +853,8 @@ async def test_cambiar_solo_el_asunto_no_emite_ni_invalida() -> None:
     conn.transaction = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(
         return_value=AsyncMock()
     )
-    redis = AsyncMock()
     sig = AsyncMock()
-    svc = BorradorService(conn, "demo", signature_api=sig, redis=redis)
+    svc = BorradorService(conn, "demo", signature_api=sig)
     mismo = "a" * 64
     svc._require_editable = AsyncMock(
         return_value={"estado": "borrador", "radicado_padre_id": None, "cuerpo_sha256": mismo}
@@ -879,20 +869,5 @@ async def test_cambiar_solo_el_asunto_no_emite_ni_invalida() -> None:
     }
     with patch("document.services.borrador_service._bo", lambda r: r):
         await svc.editar(bid, BorradorUpdate(subject="Otro asunto"), max_clearance=3, actor=None)
-    redis.xadd.assert_not_awaited()
+    assert not eventos_publicados
     sig.invalidar_circuitos.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_el_rele_sustituye_el_nivel_por_el_vigente() -> None:
-    """Un reclassified rancio no debe llevar su nivel original al reenviarse."""
-    from document.services import outbox
-
-    conn = AsyncMock()
-    conn.fetchval.return_value = 3
-    out = await outbox._con_nivel_vivo(conn, {"tracking_number": "T-1", "nivel_nuevo": 1})
-    assert out["nivel_nuevo"] == 3
-    assert "FROM radicados" in conn.fetchval.await_args.args[0]
-    # radicado desconocido: el payload sale tal cual
-    conn.fetchval.return_value = None
-    assert (await outbox._con_nivel_vivo(conn, {"tracking_number": "X", "nivel_nuevo": 1}))["nivel_nuevo"] == 1

@@ -11,8 +11,8 @@
 """T13 — cumplimiento documental, contra Postgres REAL.
 
 Lo que un mock no puede decir: que el CHECK existe y rechaza, que la clave de
-idempotencia se serializa bajo concurrencia, que el evento del outbox desaparece con el
-rollback del UPDATE, que el WHERE de la publicación excluye por tipo y por canal.
+idempotencia se serializa bajo concurrencia, que el evento del bus (ADR-049) desaparece
+con el rollback del UPDATE, que el WHERE de la publicación excluye por tipo y por canal.
 
 Mutaciones (todas verificadas, ver CHANGELOG):
 - quitar `AND a.publicable` de `get_public_anexo` → `test_un_anexo_no_marcado_no_se_sirve` cae;
@@ -20,7 +20,7 @@ Mutaciones (todas verificadas, ver CHANGELOG):
 - C-4/C10: cambiar `EXISTS` por `NOT EXISTS`, o quitar `t.publicable` / `t.activo` del subselect →
   caen `test_solo_un_tipo_publicable_permite_publicar_de_oficio` y
   `test_un_tipo_inactivo_aunque_este_marcado_no_publica`;
-- insertar el evento del outbox DESPUÉS del `async with transaction()` en `reclassify` →
+- publicar el evento DESPUÉS del `async with transaction()` en `reclassify` →
   `test_el_rollback_del_update_se_lleva_el_evento` cae;
 - sacar el INSERT de la clave de la transacción de `create` → cae
   `test_dos_envios_simultaneos_con_la_misma_clave_dan_un_solo_radicado`.
@@ -34,6 +34,7 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common import events
 from orpycamcp_common.database import tenant_schema
 
 from document.schemas.document import DocumentCreate
@@ -452,97 +453,40 @@ async def test_radicar_clasificado_nace_motivado_y_el_indice_trae_dependencia(
 # --------------------------------------------------------------------- AREA-09-05
 
 
-class _RedisQueSeCae:
-    """Redis que falla justo tras el commit — el caso que el best-effort perdía."""
-
-    async def xadd(self, *a, **k):
-        raise ConnectionError("redis caído")
+def _plano(sobre) -> dict:  # type: ignore[no-untyped-def]
+    return json.loads(sobre) if isinstance(sobre, str) else dict(sobre)
 
 
-class _RedisBueno:
-    def __init__(self) -> None:
-        self.enviados: list[tuple] = []
-
-    async def xadd(self, stream, campos, *a, **k):
-        self.enviados.append((stream, campos))
-        return b"1-0"
+async def _eventos(conn, tipo: str | None = None) -> list[dict]:
+    """Los sobres VERIFICADOS de `eventos`, en orden de publicación."""
+    filas = await conn.fetch("SELECT sobre FROM eventos ORDER BY seq")
+    sobres = [events.parse_fields(_plano(f["sobre"])) for f in filas]
+    return [e for e in sobres if tipo is None or e["event_type"] == tipo]
 
 
-async def _pendientes(conn) -> list[asyncpg.Record]:
-    return list(
-        await conn.fetch(
-            "SELECT tipo, payload, enviado_at FROM eventos_salientes "
-            "WHERE tipo = 'document.radicado.reclassified' ORDER BY id"
-        )
-    )
+async def _pendientes(conn) -> list[dict]:
+    return await _eventos(conn, "document.radicado.reclassified")
 
 
 @pytest.mark.asyncio
-async def test_reclasificar_con_redis_caido_deja_el_evento_pendiente_y_el_rele_lo_envia(
-    tenant_ctx, monkeypatch
-) -> None:
-    from document.services import outbox
-
+async def test_reclasificar_publica_el_evento_en_su_transaccion(tenant_ctx, monkeypatch) -> None:
+    """El 1→3 nace con el cambio: una fila en `eventos` con el nivel nuevo, sin relé."""
     slug, conn = await _en(tenant_ctx)
     _clearance_3(monkeypatch)
     rid = await _radicado(conn, slug)
-    actor = uuid.uuid4()
 
-    res = await DocumentService(conn, slug, redis=_RedisQueSeCae()).reclassify(
+    res = await DocumentService(conn, slug).reclassify(
         rid,
         nuevo_nivel=3,
         motivo="Contiene datos sensibles",
-        actor=actor,
+        actor=uuid.uuid4(),
         causal_reserva="art18_a_intimidad",
         fundamento_juridico="Ley 1712/2014 art. 18 lit. a",
     )
     assert res["nivel_seguridad"] == 3
-    (fila,) = await _pendientes(conn)
-    assert fila["enviado_at"] is None, "el evento 1→3 no puede perderse con Redis caído"
-
-    # El relé lo envía al volver Redis y lo marca; no lo repite.
-    bueno = _RedisBueno()
-    # Dos pendientes: el alta del radicado (sin Redis) y la reclasificación.
-    assert await outbox.retransmitir(conn, bueno, gracia_segundos=0) == 2
-    assert len(bueno.enviados) == 2
-    assert "document.radicado.reclassified" in repr(bueno.enviados)
-    assert (await _pendientes(conn))[0]["enviado_at"] is not None
-    assert await outbox.retransmitir(conn, bueno, gracia_segundos=0) == 0
-
-
-@pytest.mark.asyncio
-async def test_el_rele_no_baja_el_nivel_con_un_evento_rancio(tenant_ctx, monkeypatch) -> None:
-    """A (1→2) queda pendiente por Redis caído; B (2→3) sale. El relé publica A DESPUÉS:
-    debe llevar el nivel VIGENTE (3), no el 2 original — knowledge fija el nivel exacto y
-    un 2 tardío bajaría el fragmento de un clasificado.
-
-    Mutación verificada: quitar la llamada a `_con_nivel_vivo` en `retransmitir` → cae.
-    """
-    from document.services import outbox
-
-    slug, conn = await _en(tenant_ctx)
-    _clearance_3(monkeypatch)
-    rid = await _radicado(conn, slug)
-    kw = dict(
-        motivo="Contiene datos sensibles",
-        actor=uuid.uuid4(),
-        fundamento_juridico="Ley 1712/2014 art. 18 lit. a",
-    )
-    await DocumentService(conn, slug, redis=_RedisQueSeCae()).reclassify(
-        rid, nuevo_nivel=2, causal_reserva="art19_i_salud_publica", plazo_reserva_meses=12, **kw
-    )
-    await DocumentService(conn, slug, redis=_RedisBueno()).reclassify(
-        rid, nuevo_nivel=3, causal_reserva="art18_a_intimidad", **kw
-    )
-
-    rele = _RedisBueno()
-    await outbox.retransmitir(conn, rele, gracia_segundos=0)
-    niveles = [
-        json.loads(c["payload"] if isinstance(c["payload"], str) else c["payload"].decode())["nivel_nuevo"]
-        for _, c in rele.enviados
-        if "document.radicado.reclassified" in repr(c)
-    ]
-    assert niveles and set(niveles) == {3}, f"el relé publicó niveles rancios: {niveles}"
+    (evento,) = await _pendientes(conn)
+    assert evento["payload"]["nivel_nuevo"] == 3
+    assert evento["tenant_slug"] == slug
 
 
 @pytest.mark.asyncio
@@ -569,8 +513,8 @@ async def test_el_rollback_del_update_se_lleva_el_evento(tenant_ctx, monkeypatch
 async def test_si_no_se_puede_encolar_el_evento_el_update_revierte(tenant_ctx, monkeypatch) -> None:
     """El evento y el cambio son UN acto: si el INSERT del evento falla, el UPDATE del nivel
     revierte. Distingue «dentro de la tx» de «justo después del commit», donde el nivel ya
-    quedó confirmado y el evento no existe (la ventana que el outbox viene a cerrar).
-    Mutación: mover `outbox.encolar` fuera del `async with transaction()` → este test cae."""
+    quedó confirmado y el evento no existe (la ventana que ADR-049 cierra).
+    Mutación: mover `events.emit` fuera del `async with transaction()` → este test cae."""
     slug, conn = await _en(tenant_ctx)
     _clearance_3(monkeypatch)
     rid = await _radicado(conn, slug)
@@ -578,7 +522,7 @@ async def test_si_no_se_puede_encolar_el_evento_el_update_revierte(tenant_ctx, m
     async def _no_se_puede(*a, **k):
         raise RuntimeError("no se pudo escribir el evento")
 
-    monkeypatch.setattr("document.services.document_service.outbox.encolar", _no_se_puede)
+    monkeypatch.setattr("document.services.document_service.events.emit", _no_se_puede)
     with pytest.raises(RuntimeError):
         await DocumentService(conn, slug).reclassify(
             rid, nuevo_nivel=3, motivo="x", actor=uuid.uuid4(),
@@ -588,25 +532,10 @@ async def test_si_no_se_puede_encolar_el_evento_el_update_revierte(tenant_ctx, m
 
 
 @pytest.mark.asyncio
-async def test_el_camino_rapido_publica_y_marca_enviado(tenant_ctx, monkeypatch) -> None:
-    slug, conn = await _en(tenant_ctx)
-    _clearance_3(monkeypatch)
-    rid = await _radicado(conn, slug)
-    redis = _RedisBueno()
-    await DocumentService(conn, slug, redis=redis).reclassify(
-        rid, nuevo_nivel=2, motivo="x", actor=uuid.uuid4(),
-        causal_reserva="art19_i_salud_publica", plazo_reserva_meses=12,
-        fundamento_juridico="Ley 1712/2014 art. 19",
-    )
-    assert len(redis.enviados) == 1
-    assert (await _pendientes(conn))[0]["enviado_at"] is not None
-
-
-@pytest.mark.asyncio
-async def test_alta_y_anulacion_tambien_pasan_por_el_outbox(tenant_ctx) -> None:
+async def test_el_alta_tambien_publica_su_evento(tenant_ctx) -> None:
     slug, conn = await _en(tenant_ctx)
     await _radicado(conn, slug)
-    tipos = {r["tipo"] for r in await conn.fetch("SELECT tipo FROM eventos_salientes")}
+    tipos = {e["event_type"] for e in await _eventos(conn)}
     assert "document.radicado.created" in tipos
 
 

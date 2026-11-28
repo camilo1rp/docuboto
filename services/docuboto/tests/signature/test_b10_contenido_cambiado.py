@@ -31,7 +31,7 @@ H1 = "1" * 64
 
 @pytest.fixture
 def envelope(monkeypatch: pytest.MonkeyPatch):
-    """`parse_fields` doblado: la prueba fija el sobre sin depender del formato Redis."""
+    """`parse_fields` doblado: la prueba fija el sobre sin depender del formato plano del bus."""
     caja: dict = {}
     monkeypatch.setattr(document_consumer.events, "parse_fields", lambda _d: caja["env"])
     return caja

@@ -30,8 +30,8 @@ import pytest
 
 from tests.workflow.integration.conftest import insert_dependencia
 
-# Los fixtures y ayudas del carril de ADR-028 (mismo arnés: RBAC concedido, Redis
-# mock, radicador del reparto). Importarlos es la forma de compartir fixtures
+# Los fixtures y ayudas del carril de ADR-028 (mismo arnés: RBAC concedido, bus
+# real y grabado, radicador del reparto). Importarlos es la forma de compartir fixtures
 # entre módulos sin moverlos a un conftest que los aplicaría a todo el carril.
 from tests.workflow.integration.test_estado_radicado_integration import (  # noqa: F401
     DEP_ARC,
@@ -39,7 +39,7 @@ from tests.workflow.integration.test_estado_radicado_integration import (  # noq
     _asientos,
     _assign,
     _radicado,
-    _sin_permisos_ni_redis,
+    _sin_permisos_y_bus_grabado,
     _user,
     ctx,
 )

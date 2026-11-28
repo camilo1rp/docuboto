@@ -148,8 +148,8 @@ async def test_el_callback_pasa_su_estado_previo_y_es_acto_de_sistema(callback_c
 async def test_el_callback_que_pierde_la_carrera_no_pisa_ni_marca_aplicada(callback_ctx) -> None:  # noqa: F811
     """El despacho manual dejó `entregado` entre la lectura y el UPDATE del callback:
     el UPDATE devuelve 0 filas. Debe quedar `recorded_no_change` con el estado REAL,
-    sin `aplicada = TRUE`, sin evento a Redis y sin asiento de transición aplicada."""
-    client, conn, redis = callback_ctx
+    sin `aplicada = TRUE`, sin evento en el bus y sin asiento de transición aplicada."""
+    client, conn, eventos = callback_ctx
     body = _body(estado_operador="DEVUELTO", event_id="evt-carrera", motivo="x")
     conn.fetchval.side_effect = [uuid.uuid4(), None]
     conn.fetchrow.side_effect = [
@@ -165,7 +165,7 @@ async def test_el_callback_que_pierde_la_carrera_no_pisa_ni_marca_aplicada(callb
     sqls = [str(c.args[0]) for c in conn.execute.await_args_list]
     assert not any("aplicada = TRUE" in s for s in sqls)
     assert any("no_aplicada" in str(c.args) for c in conn.execute.await_args_list)
-    redis.xadd.assert_not_awaited()
+    assert not eventos
 
 
 # --- import: corte por streaming y cupo ---------------------------------------
